@@ -176,12 +176,16 @@ async function pollStatus() {
     if (spec.mode === "image" && !spec.path) runImageSearch(spec); // 以图搜图要先上传图片
     else openView(spec);
   }
-  // 新照片加入索引（编码过程中每约 1000 张、或扫描结束）：在首页顶部就直接刷新，翻到下面了就只提示
-  if (prev && (s.count !== prev.count || (prev.task && !s.task)) && app.view?.mode === "recent" && !app.stack.length) {
-    if (!app.view.results.length || window.scrollY < 200) reloadView();
-    else if (s.count !== prev.count) $("#refresh-note").hidden = false;
+  // 新照片加入索引（建索引时每 20 秒左右一批，或扫描结束）：首页还不满一页（第一次建索引）时直接刷新；
+  // 已经满屏了就只提示，免得正在看的照片隔一会儿跳一下。整个任务结束时停在顶部的话再刷新一次
+  const grew = prev && s.count !== prev.count;
+  const finished = prev?.task && !s.task;
+  if ((grew || finished) && app.view?.mode === "recent" && !app.stack.length) {
+    if (app.view.results.length < PAGE || (finished && window.scrollY < 200)) reloadView();
+    else if (grew) $("#refresh-note").hidden = false;
   }
   if (prev?.task && !s.task && settings.open) renderLibrary();
+  refreshWelcome();
   const busy = s.phase !== "ready" || s.task || Date.now() < pollUntil;
   if (s.phase !== "error" && busy) setTimeout(pollStatus, 800);
   else polling = false;
@@ -379,9 +383,11 @@ async function pickImage() {
 
 const drop = $("#drop");
 
-function showDrop(ok) {
-  drop.classList.toggle("bad", !ok);
-  $("#drop-text").textContent = t(ok ? "image.drop" : "image.drop_bad");
+/* 拖着东西经过窗口时的提示：image 是图片（松手就搜），other 是别的（Tauri 里可能是文件夹，松手后再判断），
+   bad 是用不了的，paste 是没有文件路径的（从浏览器拖网页上的图片），只能改用复制粘贴 */
+function showDrop(state) {
+  drop.classList.toggle("bad", state === "bad" || state === "paste");
+  $("#drop-text").textContent = t({ image: "image.drop", other: "image.drop_other", bad: "image.drop_bad", paste: "image.drop_paste" }[state]);
   if (!drop.matches(":popover-open")) drop.showPopover();
 }
 
@@ -389,19 +395,38 @@ function hideDrop() {
   if (drop.matches(":popover-open")) drop.hidePopover();
 }
 
+/* 拖进来的不是图片：其中的文件夹问一下要不要加进图库（是不是文件夹要后台判断，界面里看不到） */
+async function addDroppedFolders(paths) {
+  let found;
+  try {
+    found = (await sendJSON("POST", "/api/folders", { paths })).folders;
+  } catch (e) {
+    toast(t("toast.action_failed", { error: e.message }));
+    return;
+  }
+  if (!found.length) return toast(t("image.not_image_or_folder"));
+  const ok = await tauri.dialog.ask(t("settings.add_dropped", { n: found.length, paths: found.join("\n") }), {
+    title: t("settings.add_folder_title"), kind: "info", okLabel: t("settings.add_folder_ok"), cancelLabel: t("common.cancel"),
+  });
+  if (!ok) return;
+  const current = (await getJSON("/api/library")).dirs.map((d) => d.path); // 每次都重新取，免得用旧列表覆盖掉别的改动
+  setDirs([...current, ...found.filter((f) => !current.includes(f))]);
+}
+
 function setupImageDrop() {
   if (tauri) {
     // Tauri 窗口里文件拖放由外壳接管（网页收不到 drop 事件），这里拿到的是文件路径
     tauri.webview.getCurrentWebview().onDragDropEvent(({ payload: p }) => {
       if (p.type === "enter") {
-        showDrop(p.paths.some((x) => IMAGE_EXT.test(x)));
+        showDrop(!p.paths.length ? "paste" : p.paths.some((x) => IMAGE_EXT.test(x)) ? "image" : "other");
       } else if (p.type === "leave") {
         hideDrop();
       } else if (p.type === "drop") {
         hideDrop();
         const path = p.paths.find((x) => IMAGE_EXT.test(x));
         if (path) searchByImage({ path, name: baseName(path) });
-        else if (p.paths.length) toast(t("image.not_image"));
+        else if (p.paths.length) addDroppedFolders(p.paths);
+        else toast(t("image.drop_paste"));
       }
     }).catch(() => {});
     return;
@@ -413,7 +438,7 @@ function setupImageDrop() {
     if (!hasFiles(e)) return;
     e.preventDefault();
     const items = [...e.dataTransfer.items];
-    if (depth++ === 0) showDrop(items.some((it) => it.kind === "file" && (!it.type || it.type.startsWith("image/"))));
+    if (depth++ === 0) showDrop(items.some((it) => it.kind === "file" && (!it.type || it.type.startsWith("image/"))) ? "image" : "bad");
   });
   document.addEventListener("dragover", (e) => {
     if (hasFiles(e)) e.preventDefault();
@@ -675,17 +700,24 @@ function makeTile(r, i) {
   meta.className = "meta";
   const date = (r.taken_at || "").slice(0, 10);
   if (mode === "dups") {
-    // 比较重复照片时要看清晰度和在哪个文件夹（完全相同的两张文件名往往也一样），一直显示
+    // 比较重复照片时要看清晰度和在哪个文件夹（完全相同的两张文件名往往也一样），一直显示。
+    // 放不下时先省略文件夹名，文件名从开头省略：结尾的时间、序号才是区分同组照片的部分
     tile.title = r.path;
     meta.classList.add("always");
     const size = [r.width ? `${r.width}×${r.height}` : "", r.bytes ? formatBytes(r.bytes) : ""].filter(Boolean).join(" · ");
     const folder = r.path.split(/[\\/]/).slice(-2, -1)[0];
-    meta.append(Object.assign(document.createElement("span"), { textContent: size }),
-      Object.assign(document.createElement("span"), { className: "where", textContent: folder ? `${folder}${r.path.includes("\\") ? "\\" : "/"}${r.name}` : r.name }));
+    const where = Object.assign(document.createElement("span"), { className: "where" });
+    if (folder) where.append(Object.assign(document.createElement("span"), { className: "dir", textContent: `${folder}${r.path.includes("\\") ? "\\" : "/"}` }));
+    const file = Object.assign(document.createElement("span"), { className: "file" });
+    file.append(Object.assign(document.createElement("bdi"), { textContent: r.name }));
+    where.append(file);
+    meta.append(Object.assign(document.createElement("span"), { textContent: size }), where);
+  } else if ((mode === "similar" || mode === "image") && typeof r.score === "number") {
+    // 看起来是同一张（dHash 也吻合）时一直显示；其余的相似度悬停时才显示——同一场景隔天拍的照片相似度也有 0.9 以上
+    meta.textContent = r.same ? `${t("grid.same_photo")} · ${percent(r.score)}` : [date, percent(r.score)].filter(Boolean).join(" · ");
+    meta.classList.toggle("always", Boolean(r.same));
   } else {
-    const scored = (mode === "similar" || mode === "image") && typeof r.score === "number";
-    meta.textContent = scored ? [date, percent(r.score)].filter(Boolean).join(" · ") : date;
-    if (scored && r.score >= 0.9) meta.classList.add("always"); // 很可能是同一张照片：不用悬停也显示相似度
+    meta.textContent = date;
   }
   const check = Object.assign(document.createElement("span"), { className: "check", title: t("grid.select") });
   tile.append(img, meta, check);
@@ -790,10 +822,21 @@ function render(reset) {
   setSentinel();
 }
 
-/* 图库还是空的：引导添加照片文件夹 */
+/* 图库还是空的：引导添加照片文件夹；正在建索引时改为显示进度（第一批照片 20 秒左右就会出现） */
 function welcomeCard() {
   const box = document.createElement("div");
   box.className = "welcome";
+  // 只看编码阶段：启动时的“扫描”任务会一直挂到模型加载完，没有文件夹的新用户也会碰到
+  const task = app.status?.task;
+  if (task?.stage === "embed") {
+    box.dataset.state = "indexing";
+    box.append(Object.assign(document.createElement("h2"), { textContent: t("welcome.indexing_title") }),
+      Object.assign(document.createElement("p"), { textContent: t("welcome.indexing_text") }),
+      Object.assign(document.createElement("p"), { className: "setup-line",
+        textContent: t("welcome.indexing_progress", { done: task.done, total: task.total }) }));
+    return box;
+  }
+  box.dataset.state = "empty";
   const h = Object.assign(document.createElement("h2"), { textContent: t("welcome.title") });
   const p = Object.assign(document.createElement("p"), { textContent: t("welcome.text") });
   const btn = Object.assign(document.createElement("button"), { type: "button", className: "btn primary", textContent: t("welcome.add") });
@@ -802,7 +845,17 @@ function welcomeCard() {
     addDir();
   });
   box.append(h, p, btn);
+  if (tauri) box.append(Object.assign(document.createElement("p"), { className: "hint drag-hint", textContent: t("welcome.drag_hint") }));
   return box;
+}
+
+/* 后台进度变了：首页的空图库卡片跟着换（开始建索引时不再提示“添加文件夹”），进度文字原地更新 */
+function refreshWelcome() {
+  const card = $("#grid > .welcome:not(.setup)");
+  if (!card || app.view?.mode !== "recent" || app.view.results.length) return;
+  const fresh = welcomeCard();
+  if (card.dataset.state !== fresh.dataset.state) card.replaceWith(fresh);
+  else if (fresh.dataset.state === "indexing") card.querySelector(".setup-line").textContent = fresh.querySelector(".setup-line").textContent;
 }
 
 function setSentinel() {
@@ -966,7 +1019,7 @@ function fillInfo(r) {
   // 文本搜索的排序分扣过基线，数值本身对用户没有意义，只在找相似、以图搜图时显示相似度
   const hasScore = (v.mode === "similar" || v.mode === "image") && typeof r.score === "number";
   $("#v-score-label").hidden = $("#v-score").hidden = !hasScore;
-  if (hasScore) $("#v-score").textContent = percent(r.score);
+  if (hasScore) $("#v-score").textContent = r.same ? `${percent(r.score)} · ${t("grid.same_photo")}` : percent(r.score);
   // 重复照片页里逐张比较时，说明这张是建议保留的、完全相同的，还是几乎相同的
   const role = v.mode === "dups" && r.dup?.role !== "similar" ? r.dup?.role : null;
   $("#v-role-label").hidden = $("#v-role").hidden = !role;
@@ -1027,17 +1080,22 @@ function setZoom(z) {
   big.src = `${previewUrl(r)}?max_side=8192`;
 }
 
-vImg.addEventListener("click", (e) => {
-  if (drag?.moved) return;
-  if (zoom) return setZoom(null);
+/* 以 (x, y) 处为中心放大到原图像素 */
+function zoomAt(x, y) {
   // object-fit: contain 时图片实际显示区域比元素小，按实际区域换算点击位置
   const box = vImg.getBoundingClientRect();
   const scale = Math.min(box.width / vImg.naturalWidth, box.height / vImg.naturalHeight);
   const w = vImg.naturalWidth * scale;
   const h = vImg.naturalHeight * scale;
-  const fx = (e.clientX - box.left - (box.width - w) / 2) / w;
-  const fy = (e.clientY - box.top - (box.height - h) / 2) / h;
+  const fx = (x - box.left - (box.width - w) / 2) / w;
+  const fy = (y - box.top - (box.height - h) / 2) / h;
   setZoom({ fx: Math.min(1, Math.max(0, fx)), fy: Math.min(1, Math.max(0, fy)) });
+}
+
+vImg.addEventListener("click", (e) => {
+  if (drag?.moved) return;
+  if (zoom) setZoom(null);
+  else zoomAt(e.clientX, e.clientY);
 });
 
 stage.addEventListener("pointerdown", (e) => {
@@ -1115,6 +1173,10 @@ viewer.addEventListener("keydown", (e) => {
   } else if (key === "f") setFullscreen(!fullscreen);
   else if (key === "i") toggleInfo();
   else if (key === "s" && !e.ctrlKey && !e.metaKey) findSimilar(app.shown);
+  else if ((e.ctrlKey || e.metaKey) && key === "c" && !getSelection().toString()) { // 选中了路径文字时照常复制文字
+    e.preventDefault();
+    copyImage();
+  }
 });
 viewer.addEventListener("cancel", (e) => {
   // Esc 依次：退出放大 → 退出全屏 → 关闭预览
@@ -1130,6 +1192,12 @@ viewer.addEventListener("close", () => {
   setZoom(null);
   setPlaying(false);
   setFullscreen(false);
+  // 回到列表时停在最后看的那张：在预览里往后翻了很多张，不用再回头找
+  const tile = tileAt(app.current);
+  if (tile) {
+    tile.scrollIntoView({ block: "nearest" });
+    tile.focus({ preventScroll: true });
+  }
 });
 $("#v-play").addEventListener("click", () => setPlaying(!slideTimer));
 $("#v-full").addEventListener("click", () => setFullscreen(!fullscreen));
@@ -1151,6 +1219,9 @@ function toast(text, { action, onAction, sticky } = {}) {
     el.append(b);
   }
   if (el.matches(":popover-open")) el.hidePopover();
+  // 多选栏出现时提示放在它上面，免得挡住按钮（多选栏在窄窗口里会折成几行，按实际高度算）
+  const bar = $("#selbar");
+  el.style.bottom = bar.hidden ? "" : `${innerHeight - bar.getBoundingClientRect().top + 10}px`;
   el.showPopover(); // 放在顶层，预览打开时也能看到
   clearTimeout(toastTimer);
   if (!sticky) toastTimer = setTimeout(() => el.hidePopover(), action ? 6000 : 2600);
@@ -1161,8 +1232,7 @@ function hideToast() {
   if ($("#toast").matches(":popover-open")) $("#toast").hidePopover();
 }
 
-async function copyImage() {
-  const r = app.shown;
+async function copyImage(r = app.shown) {
   try {
     // 把 Promise 交给 ClipboardItem，下载期间不会丢掉“用户点击”的授权
     const blob = fetch(`${previewUrl(r)}?fmt=png`).then((res) => {
@@ -1176,9 +1246,9 @@ async function copyImage() {
   }
 }
 
-async function copyPath() {
+async function copyPath(r = app.shown) {
   try {
-    await navigator.clipboard.writeText(app.shown.path);
+    await navigator.clipboard.writeText(r.path);
     toast(t("toast.path_copied"));
   } catch (e) {
     toast(t("toast.copy_failed", { error: e.message || e }));
@@ -1226,6 +1296,49 @@ function markGone(tile) {
   tile.classList.add("gone");
   tile.querySelector(".role")?.remove();
   tile.append(Object.assign(document.createElement("span"), { className: "role gone", textContent: t("dups.deleted") }));
+}
+
+/* ---------- 右键菜单 ---------- */
+
+const ctxMenu = $("#ctx-menu");
+
+/* 在 (x, y) 弹出菜单；items 里的 null 是分隔线 */
+function showMenu(x, y, items) {
+  ctxMenu.replaceChildren(...items.map((it) => {
+    if (!it) return Object.assign(document.createElement("div"), { className: "sep" });
+    const b = Object.assign(document.createElement("button"), { type: "button", className: "item", textContent: it.label });
+    b.setAttribute("role", "menuitem");
+    b.addEventListener("click", () => {
+      ctxMenu.hidePopover();
+      it.run();
+    });
+    return b;
+  }));
+  ctxMenu.style.left = ctxMenu.style.top = "0px";
+  ctxMenu.showPopover();
+  // 靠近窗口右边、下边时往回挪，整个菜单留在窗口里
+  ctxMenu.style.left = `${Math.max(4, Math.min(x, innerWidth - ctxMenu.offsetWidth - 4))}px`;
+  ctxMenu.style.top = `${Math.max(4, Math.min(y, innerHeight - ctxMenu.offsetHeight - 4))}px`;
+  ctxMenu.querySelector("button").focus();
+}
+
+function hideMenu() {
+  if (ctxMenu.matches(":popover-open")) ctxMenu.hidePopover();
+}
+
+/* 一张照片的菜单：i 是列表里的序号（在预览里右键时没有） */
+function photoMenu(r, i) {
+  if (r.gone) return [{ label: t("viewer.copy_path"), run: () => copyPath(r) }]; // 原图已经删掉了
+  const items = [];
+  if (i != null) items.push({ label: t("ctx.open"), run: () => openViewer(i) });
+  items.push({ label: t("viewer.find_similar"), run: () => findSimilar(r) });
+  if (i != null) items.push({ label: t(app.selected.has(i) ? "ctx.deselect" : "ctx.select"), run: () => toggleSelect(i) });
+  items.push(null, { label: t("viewer.copy_image"), run: () => copyImage(r) }, { label: t("viewer.copy_path"), run: () => copyPath(r) });
+  if (tauri) {
+    items.push({ label: t("viewer.reveal"), run: () => opener("reveal_item_in_dir", { paths: [r.path] }) },
+      { label: t("viewer.open"), run: () => opener("open_path", { path: r.path }) });
+  }
+  return items;
 }
 
 /* ---------- 多选与导出 ---------- */
@@ -1566,6 +1679,35 @@ document.addEventListener("paste", (e) => {
   searchByImage({ blob: file, name: file.name === "image.png" ? "" : file.name }); // 截图粘贴进来都叫 image.png
 });
 $("#dups-btn").addEventListener("click", openDups);
+// 右键：照片和预览大图弹自己的菜单；其余地方也不弹浏览器自带的“后退 / 刷新 / 另存为”，输入框里保留剪切、复制、粘贴
+document.addEventListener("contextmenu", (e) => {
+  if (e.target.closest("input, textarea, select")) return;
+  e.preventDefault();
+  const tile = e.target.closest("#grid .tile");
+  const byKey = !e.clientX && !e.clientY; // 用菜单键或 Shift+F10 打开时没有鼠标位置
+  if (tile && !$("#grid").classList.contains("stale")) {
+    const i = Number(tile.dataset.index);
+    const box = tile.getBoundingClientRect();
+    showMenu(byKey ? box.left + 16 : e.clientX, byKey ? box.top + 16 : e.clientY, photoMenu(photoAt(i), i));
+  } else if (e.target === vImg && app.shown) {
+    showMenu(e.clientX, e.clientY, photoMenu(app.shown));
+  }
+});
+ctxMenu.addEventListener("keydown", (e) => {
+  const items = [...ctxMenu.querySelectorAll("button")];
+  const k = items.indexOf(document.activeElement);
+  const next = { ArrowDown: items[(k + 1) % items.length], ArrowUp: items[(k - 1 + items.length) % items.length],
+    Home: items[0], End: items.at(-1) }[e.key];
+  if (next) {
+    e.preventDefault();
+    next.focus();
+  } else if (e.key === "Tab") {
+    e.preventDefault();
+    hideMenu();
+  }
+});
+window.addEventListener("scroll", hideMenu, { passive: true });
+window.addEventListener("resize", hideMenu);
 for (const btn of $$("#dup-cat button")) {
   btn.addEventListener("click", () => {
     if (app.view?.mode === "dups" && btn.dataset.cat !== app.view.cat) openView(dupSpec(btn.dataset.cat), false);
@@ -1624,13 +1766,13 @@ $("#v-prev").addEventListener("click", () => step(-1));
 $("#v-next").addEventListener("click", () => step(1));
 $("#v-close").addEventListener("click", () => viewer.close());
 $("#v-similar").addEventListener("click", () => findSimilar(app.shown));
-$("#v-copy").addEventListener("click", copyImage);
-$("#v-copy-path").addEventListener("click", copyPath);
+$("#v-copy").addEventListener("click", () => copyImage());
+$("#v-copy-path").addEventListener("click", () => copyPath());
 $("#v-open").addEventListener("click", () => opener("open_path", { path: app.shown.path }));
 $("#v-reveal").addEventListener("click", () => opener("reveal_item_in_dir", { paths: [app.shown.path] }));
 
 document.addEventListener("keydown", (e) => {
-  if (viewer.open || settings.open || help.open) return;
+  if (viewer.open || settings.open || help.open || ctxMenu.matches(":popover-open")) return;
   const typing = e.target instanceof HTMLInputElement;
   if ((e.key === "/" && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k")) {
     e.preventDefault();
@@ -1647,6 +1789,11 @@ document.addEventListener("keydown", (e) => {
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
     e.preventDefault();
     selectAllLoaded();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c" && !getSelection().toString()) {
+    // 多选时复制路径（剪贴板一次只能放一张图），否则复制当前这张照片
+    const tile = e.target.closest?.(".tile");
+    if (app.selected.size) copySelectedPaths();
+    else if (tile) copyImage(photoAt(Number(tile.dataset.index)));
   } else if (e.key === "Escape" && app.selected.size) {
     clearSelection();
   } else if (e.key === "?") {
@@ -1661,9 +1808,15 @@ window.addEventListener("scroll", maybeLoadMore, { passive: true });
 window.addEventListener("resize", maybeLoadMore);
 $("#size-btn").addEventListener("click", () => setGridSize((app.gridSize + 1) % GRID_SIZES.length));
 window.addEventListener("wheel", (e) => {
-  if (!e.ctrlKey || viewer.open) return;
-  e.preventDefault(); // Ctrl+滚轮调缩略图大小，而不是缩放整个页面
-  setGridSize(app.gridSize + (e.deltaY < 0 ? 1 : -1));
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // 不缩放整个页面
+  if (viewer.open) {
+    // 预览里 Ctrl+滚轮（触控板双指缩放也是这样）：往前放大到原图像素，往后缩回
+    if (e.deltaY < 0 && !zoom && e.target === vImg) zoomAt(e.clientX, e.clientY);
+    else if (e.deltaY > 0 && zoom) setZoom(null);
+    return;
+  }
+  setGridSize(app.gridSize + (e.deltaY < 0 ? 1 : -1)); // 列表里调缩略图大小
 }, { passive: false });
 
 (async () => {

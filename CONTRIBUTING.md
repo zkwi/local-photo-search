@@ -30,8 +30,8 @@ Never commit personal photos, `index/`, `config.json` or logs. Use freely licens
 
 ## Releases (maintainers)
 
-1. Bump the version in `app/src-tauri/tauri.conf.json`, `app/src-tauri/Cargo.toml`, `app/package.json` and `pyproject.toml`, then run `uv lock` so `uv.lock` records it too (`uv run pytest` checks all five match). Turn `[Unreleased]` in `CHANGELOG.md` into the new version — the release is refused without that section.
-2. Commit, then push a tag such as `v0.2.0`. GitHub Actions builds `LocalPhotoSearch-<version>-windows-x64.zip` on a clean Windows machine and publishes the release with the changelog section as notes.
+1. Bump the version in `app/src-tauri/tauri.conf.json`, `app/src-tauri/Cargo.toml`, `app/package.json` and `pyproject.toml`, then run `uv lock` so `uv.lock` records it too. The lock files keep a copy as well: update the `local-photo-search` entry in `app/src-tauri/Cargo.lock` (the release build uses `--locked`) and the two `version` fields at the top of `app/package-lock.json`. `uv run pytest` checks that all of them match. Turn `[Unreleased]` in `CHANGELOG.md` into the new version — the release is refused without that section.
+2. Commit and push, wait for CI to pass, then push a tag such as `v0.3.0`. GitHub Actions builds `LocalPhotoSearch-<version>-windows-x64.zip` on a clean Windows machine and publishes the release with the changelog section as notes.
 3. To try the package locally first, run `pwsh scripts/build_release.ps1` (PowerShell 7); the zip lands in `dist/`.
 
 ---
@@ -51,4 +51,4 @@ Never commit personal photos, `index/`, `config.json` or logs. Use freely licens
 
 **隐私**：不要提交个人照片、`index/`、`config.json` 和日志；截图请用可自由使用的演示图片，并确认画面里没有本机路径或用户名。
 
-**发版（维护者）**：改 `tauri.conf.json`、`Cargo.toml`、`package.json`、`pyproject.toml` 四处版本号，再运行 `uv lock` 让 `uv.lock` 也记上（`uv run pytest` 会检查五处是否一致）；把 `CHANGELOG.md` 的 `[Unreleased]` 改成新版本，没有这一节发布会被拒绝。提交后推送 `v0.2.0` 这样的标签，GitHub Actions 会在干净的 Windows 机器上打包并发布。想先在本机试包，用 PowerShell 7 运行 `pwsh scripts/build_release.ps1`，结果在 `dist/`。
+**发版（维护者）**：改 `tauri.conf.json`、`Cargo.toml`、`package.json`、`pyproject.toml` 四处版本号，再运行 `uv lock` 让 `uv.lock` 也记上；锁文件里也各有一份：`app/src-tauri/Cargo.lock` 里 `local-photo-search` 那一项（打包时用 `--locked`），以及 `app/package-lock.json` 开头的两处 `version`。`uv run pytest` 会检查这些是否一致。把 `CHANGELOG.md` 的 `[Unreleased]` 改成新版本，没有这一节发布会被拒绝。提交并推送，等 CI 通过后再推送 `v0.3.0` 这样的标签，GitHub Actions 会在干净的 Windows 机器上打包并发布。想先在本机试包，用 PowerShell 7 运行 `pwsh scripts/build_release.ps1`，结果在 `dist/`。

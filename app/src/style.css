@@ -265,7 +265,10 @@ main { padding: 12px 20px 40px; }
   opacity: 1;
 }
 .tile .meta.always > span { display: block; overflow: hidden; text-overflow: ellipsis; }
-.tile .meta .where { font-size: 11px; opacity: .85; }
+/* 文件夹名先缩（权重大），缩没了文件名再从开头省略（rtl 让省略号出现在左边，bdi 保证文件名本身照常从左到右） */
+.tile .meta.always > .where { display: flex; font-size: 11px; opacity: .85; }
+.tile .meta .where .dir { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tile .meta .where .file { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 /* 悬停时右下角的“找相似” */
 .tile .similar-btn {
   position: absolute;
@@ -632,6 +635,8 @@ kbd {
   margin-top: 6px;
   overflow: auto;
 }
+/* 右键菜单：位置由脚本按鼠标位置设置 */
+.ctx-menu { inset: auto; min-width: 190px; }
 .suggest-pop .remove {
   margin-left: auto;
   padding: 0 6px;
@@ -674,6 +679,7 @@ kbd {
 .welcome { grid-column: 1 / -1; max-width: 520px; margin: 10vh auto 0; text-align: center; }
 .welcome h2 { margin: 0 0 8px; font-size: 18px; }
 .welcome p { margin: 0 0 16px; color: var(--muted); }
+.welcome .drag-hint { margin: 14px 0 0; font-size: 13px; }
 /* 首次准备环境的进度行：最近一条 uv 输出和已用时间 */
 .setup-line { font-size: 13px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .btn.primary { border-color: var(--accent); background: var(--accent); color: #fff; }

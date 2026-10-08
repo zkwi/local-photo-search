@@ -25,7 +25,9 @@ if register_heif():
     EXTS |= {".heic", ".heif"}
 EMBED_SIDE = 1024  # 先缩到这个尺寸再送模型，模型内部还会按 token 预算缩放
 THUMB_SIDE = 480
-CHUNK = 64
+CHUNK = 64  # 一次预取解码的张数
+# 编码批大小 8：实测与 32 一样快（RTX 4080S 每张约 45ms），torch 显存峰值却从 4.3GB 降到 1.8GB，小显存显卡也能建索引
+ENCODE_BATCH = 8
 
 
 def walk_images(root):
@@ -181,23 +183,29 @@ def embed_pending(con, model, cfg, progress=None, lock=None):
         progress(0, total)
     with ThreadPoolExecutor(max_workers=8) as pool:
         for batch in _prefetch(todo, pool, thumbs):
-            ok = [(i, r) for i, r in batch if not isinstance(r, Exception)]
             bad = [(repr(r)[:300], i) for i, r in batch if isinstance(r, Exception)]
-            if ok:
+            if bad:
+                con.executemany("UPDATE photos SET error=? WHERE id=?", bad)
+                con.commit()
+                done, failed = done + len(bad), failed + len(bad)
+            ok = [(i, r) for i, r in batch if not isinstance(r, Exception)]
+            # 解码按 64 张一批预取，编码则每 8 张写一次库、报一次进度：没有显卡时 64 张要两分钟，
+            # 整批编完才报的话进度条半天不动，搜索也要等这么久才轮到模型
+            for k in range(0, len(ok), ENCODE_BATCH):
+                part = ok[k:k + ENCODE_BATCH]
                 with lock or nullcontext():
-                    # 批大小 8：实测与 32 一样快（RTX 4080S 每张约 45ms），
-                    # torch 显存峰值却从 4.3GB 降到 1.8GB，小显存显卡也能建索引
-                    emb = model.encode([{"image": r[0]} for _, r in ok], batch_size=8, normalize_embeddings=True,
-                                       show_progress_bar=False,
+                    emb = model.encode([{"image": r[0]} for _, r in part], batch_size=ENCODE_BATCH,
+                                       normalize_embeddings=True, show_progress_bar=False,
                                        processing_kwargs={"image": {"max_soft_tokens": IMAGE_TOKENS}})
                 con.executemany(
                     "UPDATE photos SET width=?, height=?, taken_at=?, dhash=?, embedding=? WHERE id=?",
                     [(r[1], r[2], r[3], r[4], e.astype(np.float16).tobytes(), i)
-                     for (i, r), e in zip(ok, emb, strict=True)])
-            con.executemany("UPDATE photos SET error=? WHERE id=?", bad)
-            con.commit()
-            done, failed = done + len(batch), failed + len(bad)
-            if progress:
+                     for (i, r), e in zip(part, emb, strict=True)])
+                con.commit()
+                done += len(part)
+                if progress:
+                    progress(done, total)
+            if bad and not ok and progress:  # 整批都是坏图时也报一下
                 progress(done, total)
     return {"embedded": total - failed, "failed": failed, "seconds": round(time.perf_counter() - t0, 1)}
 

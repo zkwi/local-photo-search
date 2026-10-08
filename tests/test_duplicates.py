@@ -4,7 +4,7 @@ import math
 import numpy as np
 import torch
 
-from backend.duplicates import find_duplicates, page_duplicates
+from backend.duplicates import find_duplicates, mark_same, page_duplicates
 
 H = 0x0F0F_3C3C_5A5A_6969  # 随便一个 dHash
 
@@ -86,3 +86,21 @@ def test_page_keeps_groups_whole_and_counts_categories():
 
     page = page_duplicates(groups, lambda pid: pid == 4, "all", 0, 120)  # 组里有一张符合筛选就显示整组
     assert [g["ids"] for g in page["groups"]] == [[3, 4]]
+
+
+def test_mark_same_only_when_dhash_agrees():
+    """以图搜图时只标出真像同一张的：相似度高但 dHash 对不上的（同一场景另一天拍的）不标；截图要相似度很高。"""
+    snap = snapshot(LIBRARY)
+    hits = lambda: [{"id": 3, "score": 0.86}, {"id": 5, "score": 0.95}, {"id": 7, "score": 0.97}]  # noqa: E731
+    marked = mark_same(snap, hits(), H)
+    assert [h.get("same", False) for h in marked] == [True, False, False]  # 3：照片、只差 1 位；5：截图；7：画面不同
+    assert not any(h.get("same") for h in mark_same(snap, hits(), 0))  # 纯黑图的 dHash 没有区分度
+    assert not any(h.get("same") for h in mark_same(snap, hits(), None))
+
+
+def test_screenshots_are_never_near_duplicates():
+    """同一个界面隔半个月的两张截图（余额不同）：相似度 0.985、dHash 只差 2 位，也不能建议删掉其中一张。"""
+    shots = [(1, vec(0), H, 469_000, (1260, 2800), "2026-09-16 06:58:31", True, 1),
+             (2, vec(0, 0.985), H ^ 3, 465_000, (1260, 2800), "2026-09-01 06:03:27", True, 1)]
+    (group,) = find_duplicates(snapshot(shots))
+    assert group["cat"] == "similar" and set(group["roles"].values()) == {"similar"} and group["extra"] == 0

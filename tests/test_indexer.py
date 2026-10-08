@@ -5,7 +5,7 @@ from conftest import make_photo
 from PIL import Image
 
 from backend.common import open_db
-from backend.indexer import dhash, hash_pending, is_under, photo_kind, prepare, sync_files
+from backend.indexer import dhash, embed_pending, hash_pending, is_under, photo_kind, prepare, sync_files
 
 
 def smooth_image(seed, size=(800, 600)):
@@ -82,6 +82,33 @@ def test_dhash_tells_copies_from_other_photos():
     copy = Image.open(buf)
     assert bits_apart(dhash(photo), dhash(copy)) <= 4
     assert bits_apart(dhash(photo), dhash(smooth_image(1))) >= 16
+
+
+class CountingModel:
+    """代替真模型：记下每次编码几张，返回固定向量。"""
+    def __init__(self):
+        self.calls = []
+
+    def encode(self, items, **kw):
+        self.calls.append(len(items))
+        return np.ones((len(items), 4), dtype=np.float32) / 2
+
+
+def test_embed_reports_progress_every_few_photos(library):
+    """每编完 8 张就写库、报进度（没有显卡时一批 64 张要两分钟）；坏图记下错误，不影响其他照片。"""
+    photos, cfg = library
+    for k in range(20):
+        make_photo(photos / f"p{k:02}.jpg", color=(k * 10, 80, 40))
+    (photos / "broken.jpg").write_bytes(b"not a jpeg")
+    con = open_db(cfg["index_dir"])
+    sync_files(con, cfg)
+    model, seen = CountingModel(), []
+    stats = embed_pending(con, model, cfg, progress=lambda done, total: seen.append((done, total)))
+    assert model.calls == [8, 8, 4]
+    assert seen[0] == (0, 21) and seen[-1] == (21, 21) and len(seen) >= 4
+    assert stats["embedded"] == 20 and stats["failed"] == 1
+    done = con.execute("SELECT COUNT(*) FROM photos WHERE embedding IS NOT NULL AND dhash IS NOT NULL").fetchone()[0]
+    assert done == 20
 
 
 def test_changed_file_and_old_index_get_new_dhash(library):

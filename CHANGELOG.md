@@ -2,6 +2,23 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- Right-click menu on photos and in the preview: open, find similar, select, copy image, copy path, show in folder, open with the default app. The browser's own menu (Back, Refresh, Save as…) no longer appears; text boxes keep their cut/copy/paste menu.
+- Drag a photo folder into the window to add it to your library.
+- `Ctrl+C` copies the photo you are on (with several selected: their paths), and `Ctrl`+scroll or a touchpad pinch zooms in the preview.
+
+### Changed
+
+- Search by image and Find similar label results that look like the same photo as “Same photo”, using each thumbnail's dHash as well as the similarity: photos of the same scene from other days score above 90% too, so the similarity alone could not tell them apart.
+- Screenshots are no longer suggested as near-duplicates. Screenshots of the same app screen taken days apart (with different balances or messages) look almost the same, so only identical screenshot files are flagged; the rest are listed under bursts and similar, without a suggestion.
+- The first indexing shows photos as they are processed — at least every 20 seconds instead of every 1,000 photos — and the home page shows the progress instead of “No photos yet”. Indexing writes and reports every 8 photos, so on a PC without a GPU the progress moves and searches get the model within seconds instead of minutes.
+- After closing the preview, the list stays on the photo you viewed last.
+- Notifications appear above the selection bar instead of covering it, and long file names in the Duplicates view keep their distinguishing end visible.
+- Dragging a picture straight from a web page explains to copy and paste it instead of doing nothing.
+
 ## [0.2.0] - 2026-10-08
 
 ### Added

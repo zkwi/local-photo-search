@@ -33,12 +33,24 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from .common import IMAGE_TOKENS, ROOT, AppError, load_config, load_model, model_cached, open_db, save_photo_dirs
-from .indexer import embed_pending, hash_pending, is_under, load_index, needs_regroup, open_image, sync_files, timestamp
+from .indexer import (
+    THUMB_SIDE,
+    dhash,
+    embed_pending,
+    hash_pending,
+    is_under,
+    load_index,
+    needs_regroup,
+    open_image,
+    sync_files,
+    timestamp,
+)
 
 CFG = load_config()
 log = logging.getLogger("server")
 PAGE_MAX = 500
 REFRESH_EVERY = 1000  # 建索引时每新增这么多张刷新一次快照，边建边可搜
+REFRESH_SECONDS = 20  # 张数不够时也至少隔这么久刷新一次（刷新要重读索引库，2000 张实测约 30 毫秒）
 
 # 不提供 /docs 等接口文档页：用不上，打开时还会从外部 CDN 加载脚本
 app = FastAPI(title="Local Photo Search", docs_url=None, redoc_url=None, openapi_url=None)
@@ -187,14 +199,15 @@ def hash_missing(con):
 
 
 def index_new(con, sync):
-    """编码新照片（每完成约 1000 张刷新一次，边建边可搜），再重新分组。需要模型已加载。"""
+    """编码新照片（边建边可搜：每完成约 1000 张、或每过 20 秒刷新一次），再重新分组。需要模型已加载。"""
     if sync["pending"]:
-        last = [0]
+        last = [0, time.monotonic()]  # 上次刷新时的张数、时间
 
         def progress(done, total):
             S.task = {"stage": "embed", "done": done, "total": total}
-            if done - last[0] >= REFRESH_EVERY:
-                last[0] = done
+            # 只按张数刷新的话，没有显卡时第一次建索引要等半小时才看得到照片
+            if done - last[0] >= REFRESH_EVERY or (done > last[0] and time.monotonic() - last[1] >= REFRESH_SECONDS):
+                last[:] = [done, time.monotonic()]
                 S.snap = build_snapshot(with_vectors=True)
 
         stats = embed_pending(con, S.model, CFG, progress, lock=S.lock)
@@ -406,9 +419,13 @@ def similar(pid: int, offset: int = OFFSET, limit: int = LIMIT, kind: str = KIND
     snap = get_snap(need_vectors=True)
     if pid not in snap.pos:
         raise HTTPException(404, {"code": "photo_not_found"})
+    from .duplicates import mark_same
+
     t0 = time.perf_counter()
-    scores = (snap.mat @ snap.mat[snap.pos[pid]]).float()
+    row = snap.pos[pid]
+    scores = (snap.mat @ snap.mat[row]).float()
     hits, more = page_by_score(snap, scores, offset, limit, kind, exclude=pid, start=start, end=end)
+    mark_same(snap, hits, snap.hashes[row] if snap.hashed is not None and snap.hashed[row] else None)
     return {"results": hits, "has_more": more, "took_ms": round((time.perf_counter() - t0) * 1000)}
 
 
@@ -462,11 +479,13 @@ def encode_query(data):
     with S.lock:
         vec = S.model.encode([{"image": im}], normalize_embeddings=True, convert_to_tensor=True,
                              show_progress_bar=False, processing_kwargs={"image": {"max_soft_tokens": IMAGE_TOKENS}})[0]
-    small = im.copy()
+    thumb = im.copy()
+    thumb.thumbnail((THUMB_SIDE, THUMB_SIDE))  # 和图库缩略图同样大小再算 dHash，结果才可比
+    small = thumb.copy()
     small.thumbnail((160, 160))
     buf = io.BytesIO()
     small.save(buf, "JPEG", quality=80)
-    entry = {"vec": vec, "width": w, "height": h,
+    entry = {"vec": vec, "width": w, "height": h, "hash": dhash(thumb) & (2**64 - 1),
              "preview": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}
     with S.query_lock:
         S.queries[qid] = entry
@@ -511,9 +530,12 @@ def image_search(qid: str, offset: int = OFFSET, limit: int = LIMIT, kind: str =
         q = S.queries.get(qid)
     if q is None:  # 后台服务重启过，或之后又搜过很多张图：界面会重新上传
         raise HTTPException(404, {"code": "query_expired"})
+    from .duplicates import mark_same
+
     t0 = time.perf_counter()
     scores = (snap.mat @ q["vec"].to(snap.mat.device, snap.mat.dtype)).float()
     hits, more = page_by_score(snap, scores, offset, limit, kind, start=start, end=end)
+    mark_same(snap, hits, q["hash"])
     return {"results": hits, "has_more": more, "took_ms": round((time.perf_counter() - t0) * 1000)}
 
 
@@ -604,6 +626,16 @@ def update_library(body: LibraryUpdate):
         S.rescan_again = True
         return {"photo_dirs": dirs, "rescan": "after_load"}
     return {"photo_dirs": dirs, "rescan": rescan()}
+
+
+class PathList(BaseModel):
+    paths: list[str] = Field(max_length=200)
+
+
+@app.post("/api/folders")
+def folders(body: PathList):
+    """拖进窗口的东西里哪些是文件夹：界面据此询问要不要加进图库（真正添加时 PUT /api/library 还会再检查）。"""
+    return {"folders": [p for p in body.paths if Path(p).is_absolute() and Path(p).is_dir()]}
 
 
 class IdList(BaseModel):

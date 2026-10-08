@@ -5,6 +5,7 @@ import json
 from collections import OrderedDict
 
 import httpx
+import numpy as np
 import pytest
 import torch
 from fastapi import HTTPException
@@ -79,6 +80,31 @@ def test_search_by_image(ready, tmp_path, monkeypatch):
     assert big == (413, {"detail": {"code": "image_too_large", "mb": 0}})
     monkeypatch.setattr(ready.S, "phase", "loading")  # 模型还没就绪
     assert call("POST", "/api/image-query", json={"path": missing})[1]["detail"]["code"] == "model_loading"
+
+
+def test_image_search_marks_the_same_photo(ready):
+    """以图搜图的结果里，dHash 也对得上的标“同一张”；只是相似（dHash 差得多）的不标。"""
+    from backend.indexer import THUMB_SIDE, dhash, open_image
+
+    noise = (np.random.default_rng(3).random((24, 32, 3)) * 255).astype("uint8")  # 有明暗变化，dHash 才有区分度
+    buf = io.BytesIO()
+    Image.fromarray(noise).save(buf, "PNG")
+    thumb = open_image(io.BytesIO(buf.getvalue()))[0]
+    thumb.thumbnail((THUMB_SIDE, THUMB_SIDE))
+    h = dhash(thumb) & (2**64 - 1)
+    ready.S.snap.hashes = np.array([h ^ 0xFFFF, h], dtype=np.uint64)  # 第 1 张差 16 位，第 2 张一样
+    ready.S.snap.hashed = np.array([True, True])
+    q = call("POST", "/api/image-query", content=buf.getvalue(), headers={"Content-Type": "image/png"})[1]
+    page = call("GET", f"/api/image-search/{q['qid']}")[1]
+    assert [(r["id"], r.get("same", False)) for r in page["results"]] == [(2, True), (1, False)]
+
+
+def test_folders_tells_dropped_folders_from_files(tmp_path):
+    """拖进窗口的东西里只有文件夹会被问要不要加进图库。"""
+    (tmp_path / "photos").mkdir()
+    (tmp_path / "a.pdf").write_bytes(b"x")
+    paths = [str(tmp_path / "photos"), str(tmp_path / "a.pdf"), "relative\\dir", str(tmp_path / "missing")]
+    assert call("POST", "/api/folders", json={"paths": paths}) == (200, {"folders": [str(tmp_path / "photos")]})
 
 
 def test_missing_ignores_offline_folders(ready, tmp_path, monkeypatch):

@@ -6,11 +6,12 @@ dHash 也只差几位（2000 张样本里这类误配有上百对，照片之间
 
 每组按像素数、文件大小挑出建议保留的一张，其余标为完全相同 / 几乎相同 / 相似（连拍里另一个瞬间，要用户自己挑）。
 “几乎相同”除了另存的副本，也包括画面没有可见差别的连拍（样本里同一秒的连拍常常如此），对整理来说留一张就够了。
+截图之间只认完全相同：同一个界面不同日子的截图（余额、聊天记录不同）看起来几乎一样，不能建议删掉。
 """
 import numpy as np
 import torch
 
-from .grouping import DUP_SIM, STEP
+from .grouping import STEP
 
 SAME_SIM, SAME_HASH = 0.995, 2  # 完全相同：再加上文件大小、尺寸一样（多是备份或拷贝出来的）
 NEAR_SIM, NEAR_HASH = 0.80, 4  # 几乎相同：微信压缩副本的相似度最低约 0.83，dHash 相差 0~1 位，调色后 0~4 位
@@ -45,6 +46,27 @@ def near_pairs(snap):
     return pairs
 
 
+def mark_same(snap, hits, ref_hash):
+    """以图搜图、找相似的结果里，看起来和参照图是同一张的（规则同“几乎相同”）标上 same。ref_hash 为 None 时不标。
+    只看相似度分不清：同一个人在同一把椅子上隔天拍的照片相似度也有 0.96，压缩过的副本却可能只有 0.83。"""
+    if ref_hash is None or not hits or snap.hashes is None:
+        return hits
+    ref = np.uint64(ref_hash)
+    if ref in (0, 2**64 - 1):  # 纯黑、纯白这类图的 dHash 没有区分度
+        return hits
+    rows = [snap.pos[h["id"]] for h in hits]
+    dist = np.bitwise_count(snap.hashes[rows] ^ ref)
+    sims = np.array([h["score"] for h in hits])
+    # 截图要几乎一模一样才算：同一个界面隔半个月截的两张（数字不同）相似度也有 0.985、dHash 只差 2 位
+    shot = snap.is_shot[rows].cpu().numpy()
+    alike = np.where(shot, (dist <= SAME_HASH) & (sims >= SAME_SIM), (dist <= NEAR_HASH) & (sims >= NEAR_SIM))
+    same = snap.hashed[rows] & alike
+    for h, s in zip(hits, same.tolist(), strict=True):
+        if s:
+            h["same"] = True
+    return hits
+
+
 def describe(snap, ids):
     """一组照片：挑出建议保留的一张，其余标上和它（或排在前面的其他张）的关系。"""
     meta = snap.meta
@@ -63,8 +85,9 @@ def describe(snap, ids):
     earlier = np.tril(np.ones((len(order), len(order)), dtype=bool), -1)  # 只和排在前面（更清晰、更大）的比
     same = (both & earlier & (dist <= SAME_HASH) & (sims >= SAME_SIM) & (size[:, None] == size[None, :])
             & (w[:, None] == w[None, :]) & (hh[:, None] == hh[None, :]))
-    need = np.where(shot[:, None] | shot[None, :], DUP_SIM, NEAR_SIM)  # 截图要相似度很高才算
-    near = both & earlier & (dist <= NEAR_HASH) & (sims >= need)
+    # 截图之间不算“几乎相同”：同一个界面隔几天截的图（余额、聊天记录不同）相似度和 dHash 都和真副本差不多，
+    # 建议删掉其中一张可能丢信息。截图只认完全相同的文件，其余都归“相似”，由用户自己看
+    near = both & earlier & (dist <= NEAR_HASH) & (sims >= NEAR_SIM) & ~(shot[:, None] | shot[None, :])
     roles = dict(zip(order, np.where(same.any(1), "identical", np.where(near.any(1), "near", "similar")).tolist(),
                      strict=True))
     if same.any() or near.any():

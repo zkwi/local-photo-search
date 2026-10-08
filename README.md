@@ -33,12 +33,12 @@ Windows may show “Windows protected your PC” because the app isn't code-sign
 
 - **Natural-language photo search**: describe a scene, an object, a color or a moment, in English, Chinese or another language the model understands. Results are ranked by semantic similarity; filter to photos or to screenshots.
 - **Dates in the query**: “beach May 2025”, “cat past 30 days” or “去年5月 海边” become a date filter; a date on its own browses that period.
-- **Search by image**: drop a picture into the window, paste one with Ctrl+V, or pick a file with the image button in the search box. Handy for finding the original of a photo someone sent you: the same photo comes first, and strong matches show their similarity.
-- **Duplicate photos**: review identical files, near-duplicates (resized or compressed copies such as ones saved from a chat app, edited versions, bursts with no visible difference) and burst shots group by group, with a suggested photo to keep and each file's resolution, size and folder. The app never deletes anything: select the photos you don't need and use **Show in folder** to delete them yourself.
+- **Search by image**: drop a picture into the window, paste one with Ctrl+V, or pick a file with the image button in the search box. Handy for finding the original of a photo someone sent you: it comes first and is labeled **Same photo**.
+- **Duplicate photos**: review identical files, near-duplicates (resized or compressed copies such as ones saved from a chat app, edited versions, bursts with no visible difference) and burst shots group by group, with a suggested photo to keep and each file's resolution, size and folder. Screenshots are only flagged when the files are identical. The app never deletes anything: select the photos you don't need and use **Show in folder** to delete them yourself.
 - **Find similar photos** from any photo in your library, and **browse by month**. Burst shots and duplicates are folded into one tile and can be stepped through in the preview.
-- **Preview**: zoom into the original, slideshow, full screen, copy the image, show it in its folder.
+- **Preview**: zoom into the original (click, or Ctrl+scroll), slideshow, full screen, copy the image (Ctrl+C), show it in its folder. Right-click a photo for these actions anywhere in the app.
 - **Organize**: select several photos (Ctrl/Shift+click, Ctrl+A), then copy their paths, show them in File Explorer or export copies to a folder.
-- **Your library, your folders**: several folders, including NAS and external drives that may be offline; JPG, PNG, WebP, BMP and HEIC. New, changed and deleted photos are picked up at startup.
+- **Your library, your folders**: add folders in Settings or drag them into the window; NAS and external drives that may be offline are fine; JPG, PNG, WebP, BMP and HEIC. New, changed and deleted photos are picked up at startup, and the first indexing shows photos as it goes.
 - **Interface in English and Simplified Chinese**, following your system language.
 
 Your photo folders are only read — nothing is modified or moved, and export makes copies. Press `?` in the app for keyboard shortcuts.
@@ -142,9 +142,10 @@ cd app; npm test        # UI strings and date parsing
 - **Retrieval**: EmbeddingGemma 2 encodes every photo once into a 768-dimensional vector. A search encodes the query the same way and compares it with all photo vectors, which stay in GPU or system memory, so scoring the whole library is a single matrix multiplication.
 - **Debiasing** (`backend/calibration.py`): text-heavy images such as screenshots and documents score high for any text query. Each photo's average score against about 100 generic captions is subtracted, and when screenshots are not clearly ahead of photos for a query they get a small extra penalty. On 2,000 phone photos this clearly reduced screenshots crowding visual queries while barely affecting screenshot-oriented ones (the numbers are in the code comments).
 - **Burst grouping** (`backend/grouping.py`): similarity ≥ 0.93 and taken within 10 minutes, or similarity ≥ 0.98 (copies of the same image).
-- **Duplicates** (`backend/duplicates.py`): a resized or compressed copy can be as low as 0.83 in similarity to its original, so near-duplicates also use a 64-bit difference hash (dHash) of each thumbnail: similarity ≥ 0.80 and at most 4 different bits. Screenshots of the same app screen share a dHash even months apart, so screenshots need similarity ≥ 0.98. Identical files also have the same size and dimensions.
-- **Search by image**: the picture is encoded like a library photo and compared with every photo vector (plain cosine similarity, no debiasing); it is kept in memory only for paging.
+- **Duplicates** (`backend/duplicates.py`): a resized or compressed copy can be as low as 0.83 in similarity to its original, so near-duplicates also use a 64-bit difference hash (dHash) of each thumbnail: similarity ≥ 0.80 and at most 4 different bits. Screenshots of the same app screen share a dHash and score 0.98+ even when taken weeks apart with different numbers, so screenshots only count when the files are identical (same size, dimensions and picture).
+- **Search by image**: the picture is encoded like a library photo and compared with every photo vector (plain cosine similarity, no debiasing); it is kept in memory only for paging. Photos of the same scene from other days also score above 0.9, so “Same photo” uses the near-duplicate rule above (for screenshots: similarity ≥ 0.995 and at most 2 different bits).
 - **Startup**: the index is read first so photos can be browsed after about 2 seconds; the model loads while new photos are scanned, and searches submitted before it is ready run automatically afterwards.
+- **Indexing**: photos are decoded 64 at a time in the background and encoded 8 at a time; the list refreshes every 1,000 photos or 20 seconds, so new photos show up while the rest are still being processed.
 
 ### Project layout
 
