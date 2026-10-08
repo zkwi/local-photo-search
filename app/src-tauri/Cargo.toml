@@ -1,6 +1,6 @@
 [package]
 name = "local-photo-search"
-version = "0.3.0"
+version = "0.4.0"
 description = "Search your local photos with natural language, fully offline"
 license = "MIT"
 repository = "https://github.com/zkwi/local-photo-search"
