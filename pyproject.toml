@@ -1,6 +1,6 @@
 [project]
 name = "local-photo-search"
-version = "0.1.0"
+version = "0.2.0"
 description = "Search your local photos with natural language, fully offline (EmbeddingGemma 2 + Tauri)"
 readme = "README.md"
 license = "MIT"

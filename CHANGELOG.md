@@ -2,14 +2,14 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-08
 
 ### Added
 
 - Search by image: drop a picture into the window, paste one with Ctrl+V, or pick a file with the image button in the search box. The same photo comes first, and matches of 90% or more show their similarity without hovering.
-- Duplicates view (the Duplicates button, or Settings → Review duplicates): identical files, near-duplicates (resized or compressed copies, edited versions, bursts with no visible difference) and burst shots, group by group, with a suggested photo to keep, each file's resolution, size and folder, and how much space the others take. It is read-only: select what you don't need and delete it yourself with “Show in folder”.
+- Duplicates view (the Duplicates button, or Settings → Review duplicates): identical files, near-duplicates (resized or compressed copies, edited versions, bursts with no visible difference) and burst shots, group by group, with a suggested photo to keep, each file's resolution, size and folder, and how much space the others take. It is read-only: select what you don't need and delete it yourself with “Show in folder”. When you come back to the app, photos you deleted are marked as deleted and the folders are rescanned.
 - “Show in folder” for several selected photos at once (one File Explorer window per folder, with the photos selected).
-- A find-similar button on each thumbnail, shown on hover.
+- A find-similar button on each thumbnail, shown on hover, and the `S` key in the preview.
 
 ### Changed
 
