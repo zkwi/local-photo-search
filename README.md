@@ -10,6 +10,7 @@ English | [简体中文](README.zh-CN.md)
 
 **Local Photo Search** is a free, open-source desktop app that finds photos on your own computer by what is in them.
 Type “sunset at the beach”, “birthday cake May last year” or “chat screenshot” and matching photos appear in a fraction of a second.
+You can also search by image — drop or paste a picture to find the same or similar photos — and review duplicate photos to free up space.
 It works like the search in Google Photos or Apple Photos, but everything runs locally with Google's multimodal embedding model
 **[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2)** — your photos are never uploaded, and no account or internet connection is needed after setup.
 
@@ -32,9 +33,11 @@ Windows may show “Windows protected your PC” because the app isn't code-sign
 
 - **Natural-language photo search**: describe a scene, an object, a color or a moment, in English, Chinese or another language the model understands. Results are ranked by semantic similarity; filter to photos or to screenshots.
 - **Dates in the query**: “beach May 2025”, “cat past 30 days” or “去年5月 海边” become a date filter; a date on its own browses that period.
-- **Find similar photos** from any picture, and **browse by month**. Burst shots and duplicates are folded into one tile and can be stepped through in the preview.
+- **Search by image**: drop a picture into the window, paste one with Ctrl+V, or pick a file with the image button in the search box. Handy for finding the original of a photo someone sent you: the same photo comes first, and strong matches show their similarity.
+- **Duplicate photos**: review identical files, near-duplicates (resized or compressed copies such as ones saved from a chat app, edited versions, bursts with no visible difference) and burst shots group by group, with a suggested photo to keep and each file's resolution, size and folder. The app never deletes anything: select the photos you don't need and use **Show in folder** to delete them yourself.
+- **Find similar photos** from any photo in your library, and **browse by month**. Burst shots and duplicates are folded into one tile and can be stepped through in the preview.
 - **Preview**: zoom into the original, slideshow, full screen, copy the image, show it in its folder.
-- **Organize**: select several photos (Ctrl/Shift+click, Ctrl+A), then copy their paths or export copies to a folder.
+- **Organize**: select several photos (Ctrl/Shift+click, Ctrl+A), then copy their paths, show them in File Explorer or export copies to a folder.
 - **Your library, your folders**: several folders, including NAS and external drives that may be offline; JPG, PNG, WebP, BMP and HEIC. New, changed and deleted photos are picked up at startup.
 - **Interface in English and Simplified Chinese**, following your system language.
 
@@ -74,6 +77,10 @@ Text-to-image search needs a model that puts photos and sentences into the same 
 **Can it find text or names in screenshots?** The model reads some of the text in screenshots, but exact names or numbers are hit-and-miss because there is no OCR.
 
 **Why does a burst show up as one photo?** Photos that look nearly the same and were taken within 10 minutes of each other form a group. Lists show one photo per group; open it to step through the rest.
+
+**Does it delete duplicates for me?** No. The app never deletes, moves or changes your photos. **Duplicates** only lists them: select the ones you don't need, click **Show in folder**, and delete them in File Explorer (they go to the Recycle Bin). The suggested photo to keep is simply the one with the highest resolution, then the largest file — check each group before deleting.
+
+**Which images can I search with?** JPEG, PNG, WebP, BMP, GIF and HEIC, up to 50 MB. The picture doesn't need to be in your library; it is only used for that search and is not saved.
 
 **The interface is in the wrong language.** It follows your Windows display language. Change it in Settings → Language.
 
@@ -135,16 +142,19 @@ cd app; npm test        # UI strings and date parsing
 - **Retrieval**: EmbeddingGemma 2 encodes every photo once into a 768-dimensional vector. A search encodes the query the same way and compares it with all photo vectors, which stay in GPU or system memory, so scoring the whole library is a single matrix multiplication.
 - **Debiasing** (`backend/calibration.py`): text-heavy images such as screenshots and documents score high for any text query. Each photo's average score against about 100 generic captions is subtracted, and when screenshots are not clearly ahead of photos for a query they get a small extra penalty. On 2,000 phone photos this clearly reduced screenshots crowding visual queries while barely affecting screenshot-oriented ones (the numbers are in the code comments).
 - **Burst grouping** (`backend/grouping.py`): similarity ≥ 0.93 and taken within 10 minutes, or similarity ≥ 0.98 (copies of the same image).
+- **Duplicates** (`backend/duplicates.py`): a resized or compressed copy can be as low as 0.83 in similarity to its original, so near-duplicates also use a 64-bit difference hash (dHash) of each thumbnail: similarity ≥ 0.80 and at most 4 different bits. Screenshots of the same app screen share a dHash even months apart, so screenshots need similarity ≥ 0.98. Identical files also have the same size and dimensions.
+- **Search by image**: the picture is encoded like a library photo and compared with every photo vector (plain cosine similarity, no debiasing); it is kept in memory only for paging.
 - **Startup**: the index is read first so photos can be browsed after about 2 seconds; the model loads while new photos are scanned, and searches submitted before it is ready run automatically afterwards.
 
 ### Project layout
 
 | Path | Contents |
 | --- | --- |
-| `backend/server.py` | FastAPI backend: status, browsing, search, similar photos, export, library settings, previews |
-| `backend/indexer.py` | Folder scanning, thumbnails, encoding, SQLite index |
+| `backend/server.py` | FastAPI backend: status, browsing, search, search by image, similar photos, duplicates, export, library settings, previews |
+| `backend/indexer.py` | Folder scanning, thumbnails, encoding, dHash, SQLite index |
 | `backend/calibration.py` | Debiasing and the screenshot penalty for text search |
 | `backend/grouping.py` | Burst and duplicate grouping |
+| `backend/duplicates.py` | The Duplicates view: identical files, near-duplicates, suggested photo to keep |
 | `backend/common.py` | Configuration, model loading, index database |
 | `app/src/` | Interface (plain HTML/CSS/JS); `locales/` holds the UI strings, `time.js` parses dates in queries |
 | `app/src-tauri/` | Tauri shell: first-run setup with uv, starts and restarts the backend, single instance, window state |

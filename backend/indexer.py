@@ -79,9 +79,9 @@ def exif_time(exif):
         return None
 
 
-def prepare(path, thumb_path, mtime_ns):
-    """解码一张照片并写缩略图，返回 (模型输入图, 宽, 高, 拍摄时间)。"""
-    with Image.open(path) as im:
+def open_image(fp):
+    """解码照片（路径或文件对象），按 EXIF 方向转正并缩到模型输入尺寸。返回 (图, 原始宽, 原始高, 拍摄时间或 None)。"""
+    with Image.open(fp) as im:
         exif = im.getexif()
         w, h = im.size
         if exif.get(274) in (5, 6, 7, 8):  # EXIF 方向为旋转 90° 时宽高互换
@@ -90,12 +90,25 @@ def prepare(path, thumb_path, mtime_ns):
         im.draft("RGB", (EMBED_SIDE, EMBED_SIDE))  # JPEG 按 1/2~1/8 直接解码，大图快很多
         im = ImageOps.exif_transpose(im).convert("RGB")
     im.thumbnail((EMBED_SIDE, EMBED_SIDE))
+    return im, w, h, taken
+
+
+def dhash(im):
+    """64 位差值哈希（9×8 灰度图里相邻格子比明暗），按有符号 64 位整数返回，正好存进 SQLite。
+    同一张照片的压缩、缩小、调色副本相差 0~4 位，连拍的相邻几张、不同照片一般相差 20 位以上；裁剪过的认不出。"""
+    g = np.asarray(im.convert("L").resize((9, 8), Image.LANCZOS), dtype=np.int16)
+    return int.from_bytes(np.packbits(g[:, 1:] > g[:, :-1]).tobytes(), "big", signed=True)
+
+
+def prepare(path, thumb_path, mtime_ns):
+    """解码一张照片并写缩略图，返回 (模型输入图, 宽, 高, 拍摄时间, 缩略图的 dHash)。"""
+    im, w, h, taken = open_image(path)
     thumb = im.copy()
     thumb.thumbnail((THUMB_SIDE, THUMB_SIDE))
     thumb.save(thumb_path, "JPEG", quality=82)
     if taken is None:
         taken = datetime.fromtimestamp(mtime_ns / 1e9).strftime("%Y-%m-%d %H:%M:%S")
-    return im, w, h, taken
+    return im, w, h, taken, dhash(thumb)
 
 
 def _prefetch(todo, pool, thumbs):
@@ -146,8 +159,8 @@ def sync_files(con, cfg):
         if old is None:
             con.execute("INSERT INTO photos(path, size, mtime_ns) VALUES (?,?,?)", (path, size, mtime))
         elif old[1:] != (size, mtime):
-            con.execute("UPDATE photos SET size=?, mtime_ns=?, embedding=NULL, error=NULL, group_id=NULL WHERE id=?",
-                        (size, mtime, old[0]))
+            con.execute("UPDATE photos SET size=?, mtime_ns=?, embedding=NULL, error=NULL, group_id=NULL, dhash=NULL "
+                        "WHERE id=?", (size, mtime, old[0]))
     # 无法访问的目录里的照片不算删除，等目录恢复后照常使用
     gone = [i for p, (i, _, _) in known.items() if p not in seen and not any(is_under(p, d) for d in offline)]
     con.executemany("DELETE FROM photos WHERE id=?", [(i,) for i in gone])
@@ -178,14 +191,40 @@ def embed_pending(con, model, cfg, progress=None, lock=None):
                                        show_progress_bar=False,
                                        processing_kwargs={"image": {"max_soft_tokens": IMAGE_TOKENS}})
                 con.executemany(
-                    "UPDATE photos SET width=?, height=?, taken_at=?, embedding=? WHERE id=?",
-                    [(r[1], r[2], r[3], e.astype(np.float16).tobytes(), i) for (i, r), e in zip(ok, emb, strict=True)])
+                    "UPDATE photos SET width=?, height=?, taken_at=?, dhash=?, embedding=? WHERE id=?",
+                    [(r[1], r[2], r[3], r[4], e.astype(np.float16).tobytes(), i)
+                     for (i, r), e in zip(ok, emb, strict=True)])
             con.executemany("UPDATE photos SET error=? WHERE id=?", bad)
             con.commit()
             done, failed = done + len(batch), failed + len(bad)
             if progress:
                 progress(done, total)
     return {"embedded": total - failed, "failed": failed, "seconds": round(time.perf_counter() - t0, 1)}
+
+
+def hash_pending(con, cfg, progress=None):
+    """给 0.1.0 建的旧索引补算 dHash：只读缩略图、不读原图，上万张也只要十几秒。返回补算的张数。"""
+    thumbs = thumbs_dir(cfg)
+    todo = [r[0] for r in con.execute("SELECT id FROM photos WHERE embedding IS NOT NULL AND dhash IS NULL")]
+
+    def one(i):
+        try:
+            with Image.open(thumbs / f"{i}.jpg") as im:
+                return i, dhash(im)
+        except OSError:  # 缩略图丢了：这张照片只是认不出副本，下次启动再试
+            return i, None
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for start in range(0, len(todo), 500):
+            chunk = todo[start:start + 500]
+            con.executemany("UPDATE photos SET dhash=? WHERE id=?",
+                            [(h, i) for i, h in pool.map(one, chunk) if h is not None])
+            con.commit()
+            done += len(chunk)
+            if progress:
+                progress(done, len(todo))
+    return len(todo)
 
 
 def needs_regroup(con):
@@ -206,9 +245,10 @@ def update_index(model, cfg, progress=None):
 
     con = open_db(cfg["index_dir"])
     stats = sync_files(con, cfg)
+    stats["hashed"] = hash_pending(con, cfg)
     stats.update(embed_pending(con, model, cfg, progress))
     if needs_regroup(con):
-        ids, mat, meta, _ = load_index(cfg["index_dir"])
+        ids, mat, meta, _, _ = load_index(cfg["index_dir"])
         vecs = torch.from_numpy(mat.astype(np.float32)).to(model.device)
         stats["groups"] = regroup(con, ids, vecs, [timestamp(meta[i]["taken_at"]) for i in ids])
     stats["indexed"] = con.execute("SELECT COUNT(*) FROM photos WHERE embedding IS NOT NULL").fetchone()[0]
@@ -218,17 +258,17 @@ def update_index(model, cfg, progress=None):
 
 
 def load_index(index_dir):
-    """读出全部向量，返回 (id 列表, 向量矩阵, 每张照片的元信息, 每张所属组的 id)。"""
+    """读出全部向量，返回 (id 列表, 向量矩阵, 每张照片的元信息, 每张所属组的 id, 每张的 dHash（没算过为 None）)。"""
     con = open_db(index_dir)
-    rows = con.execute("SELECT id, path, width, height, taken_at, embedding, group_id FROM photos "
+    rows = con.execute("SELECT id, path, size, width, height, taken_at, embedding, group_id, dhash FROM photos "
                        "WHERE embedding IS NOT NULL ORDER BY id").fetchall()
     con.close()
     ids = [r[0] for r in rows]
-    mat = np.frombuffer(b"".join(r[5] for r in rows), dtype=np.float16).reshape(len(rows), -1) if rows else None
-    meta = {r[0]: {"path": r[1], "name": Path(r[1]).name, "width": r[2], "height": r[3], "taken_at": r[4],
-                   "kind": photo_kind(r[1])} for r in rows}
-    groups = [r[6] or r[0] for r in rows]  # 还没分组的照片自成一组
-    return ids, mat, meta, groups
+    mat = np.frombuffer(b"".join(r[6] for r in rows), dtype=np.float16).reshape(len(rows), -1) if rows else None
+    meta = {r[0]: {"path": r[1], "name": Path(r[1]).name, "bytes": r[2], "width": r[3], "height": r[4],
+                   "taken_at": r[5], "kind": photo_kind(r[1])} for r in rows}
+    groups = [r[7] or r[0] for r in rows]  # 还没分组的照片自成一组
+    return ids, mat, meta, groups, [r[8] for r in rows]
 
 
 def main():

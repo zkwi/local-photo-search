@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS photos (
     taken_at  TEXT,
     error     TEXT,
     embedding BLOB,           -- float16 × 768，已归一化
-    group_id  INTEGER         -- 连拍/重复照片分组，值为组内第一张的 id
+    group_id  INTEGER,        -- 连拍/重复照片分组，值为组内第一张的 id
+    dhash     INTEGER         -- 缩略图的 64 位差值哈希（按有符号整数存），用来认出同一张照片的副本
 );
 """
 
@@ -83,10 +84,12 @@ def save_photo_dirs(dirs):
 def open_db(index_dir):
     con = sqlite3.connect(Path(index_dir) / "index.db", check_same_thread=False)
     con.executescript(SCHEMA)
-    # 旧索引库补列：group_id 是后加的
-    if "group_id" not in {r[1] for r in con.execute("PRAGMA table_info(photos)")}:
-        con.execute("ALTER TABLE photos ADD COLUMN group_id INTEGER")
-        con.commit()
+    # 旧索引库补列：group_id、dhash 是后加的
+    cols = {r[1] for r in con.execute("PRAGMA table_info(photos)")}
+    for col in ("group_id", "dhash"):
+        if col not in cols:
+            con.execute(f"ALTER TABLE photos ADD COLUMN {col} INTEGER")
+    con.commit()
     return con
 
 

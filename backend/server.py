@@ -7,6 +7,8 @@
 → 模型就绪即可搜索 → 新照片在后台编码，每完成约 1000 张刷新一次。torch 等重依赖延后导入。
 """
 import argparse
+import base64
+import hashlib
 import io
 import logging
 import os
@@ -14,21 +16,24 @@ import socket
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .common import ROOT, AppError, load_config, load_model, model_cached, open_db, save_photo_dirs
-from .indexer import embed_pending, is_under, load_index, needs_regroup, sync_files, timestamp
+from .common import IMAGE_TOKENS, ROOT, AppError, load_config, load_model, model_cached, open_db, save_photo_dirs
+from .indexer import embed_pending, hash_pending, is_under, load_index, needs_regroup, open_image, sync_files, timestamp
 
 CFG = load_config()
 log = logging.getLogger("server")
@@ -37,7 +42,7 @@ REFRESH_EVERY = 1000  # 建索引时每新增这么多张刷新一次快照，�
 
 # 不提供 /docs 等接口文档页：用不上，打开时还会从外部 CDN 加载脚本
 app = FastAPI(title="Local Photo Search", docs_url=None, redoc_url=None, openapi_url=None)
-# 只放行 Tauri 窗口的来源，避免普通网页跨域读取本机照片信息；写操作只收 JSON，跨域时必须先过预检
+# 只放行 Tauri 窗口的来源，避免普通网页跨域读取本机照片信息；写操作只收 JSON 或图片字节，跨域时必须先过预检
 app.add_middleware(CORSMiddleware, allow_origins=["http://tauri.localhost", "https://tauri.localhost", "tauri://localhost"],
                    allow_methods=["GET", "POST", "PUT"], allow_headers=["*"])
 # 只认发给本机地址的请求：防 DNS 重绑定（恶意网页把自己的域名解析到 127.0.0.1，再以“同源”身份读照片）
@@ -56,10 +61,13 @@ class Snapshot:
     counts: dict = field(default_factory=dict)  # 范围 → 照片张数（不合并）
     time_of: dict = field(default_factory=dict)  # id → 拍摄时间戳（未知为 None）
     years: list = field(default_factory=list)  # [[年份, 张数], ...]，新的在前
+    hashes: object = None  # 每行的 dHash（numpy uint64），没算过的为 0、hashed 为 False
+    hashed: object = None
     mat: object = None  # 以下为 torch 张量，模型加载后才有
     bias: object = None  # 每张图对通用文本的基线分，文本搜索时扣掉
     is_shot: object = None
     times: object = None  # 拍摄时间戳，未知为 NaN
+    dups: object = None  # 重复照片组，第一次打开“重复照片”时才算，见 duplicates.py
 
 
 class State:
@@ -68,7 +76,7 @@ class State:
     stage = "reading_index"  # 启动阶段：reading_index / loading_model / downloading_model
     download = None  # 首次下载模型时已下载的字节数，界面据此显示进度
     error = None  # 启动失败时为 {"code", "detail"}
-    task = None  # 后台整理索引时为 {"stage": scan/embed/group, "done": n, "total": m}
+    task = None  # 后台整理索引时为 {"stage": scan/hash/embed/group, "done": n, "total": m}
     warning = None  # 例如照片目录无法访问：{"code": "dirs_offline", "dirs": [...]}
     last_scan = None
     model = None
@@ -76,7 +84,10 @@ class State:
     snap: Snapshot | None = None
     lock = threading.Lock()  # 模型编码串行执行
     scan_lock = threading.Lock()  # 同一时间只跑一次扫描/编码
+    dup_lock = threading.Lock()  # 同一份快照的重复照片组只算一次
     rescan_again = False  # 扫描进行中又改了文件夹：结束后再扫一次
+    queries = OrderedDict()  # 以图搜图：查询编号 → 图片向量，只留最近几个，翻页时用
+    query_lock = threading.Lock()
 
 
 S = State()
@@ -105,7 +116,7 @@ def watch_download(model_id):
 
 
 def build_snapshot(with_vectors):
-    ids, mat, meta, groups = load_index(CFG["index_dir"])
+    ids, mat, meta, groups, hashes = load_index(CFG["index_dir"])
     taken = lambda i: meta[i]["taken_at"] or ""  # noqa: E731
     group_of = dict(zip(ids, groups, strict=True))
     members = {}
@@ -128,7 +139,9 @@ def build_snapshot(with_vectors):
             years[meta[i]["taken_at"][:4]] = years.get(meta[i]["taken_at"][:4], 0) + 1
     snap = Snapshot(ids=ids, meta=meta, pos={pid: i for i, pid in enumerate(ids)}, group_of=group_of,
                     members=members, folded=folded, counts=counts, time_of=time_of,
-                    years=[[int(y), n] for y, n in sorted(years.items(), reverse=True)])
+                    years=[[int(y), n] for y, n in sorted(years.items(), reverse=True)],
+                    hashes=np.array([h or 0 for h in hashes], dtype=np.int64).view(np.uint64),
+                    hashed=np.array([h is not None for h in hashes], dtype=bool))
     if with_vectors and mat is not None:
         import torch
 
@@ -159,6 +172,18 @@ def scan(con):
     if sync["removed"]:
         S.snap = build_snapshot(with_vectors=S.snap is not None and S.snap.mat is not None)
     return sync
+
+
+def hash_missing(con):
+    """给 0.1.0 建的旧索引补算 dHash（“重复照片”靠它认出同一张照片的副本）。只读缩略图，不需要模型。"""
+    def progress(done, total):
+        S.task = {"stage": "hash", "done": done, "total": total}
+
+    n = hash_pending(con, CFG, progress)
+    if n:
+        log.info("补算 dHash：%d 张", n)
+        if S.snap is not None and S.snap.mat is not None:
+            S.snap = build_snapshot(with_vectors=True)
 
 
 def index_new(con, sync):
@@ -207,7 +232,8 @@ def boot():
         loader = threading.Thread(target=load, daemon=True)
         loader.start()
         con = open_db(CFG["index_dir"])
-        sync = scan(con)  # 扫描磁盘与加载模型同时进行
+        sync = scan(con)  # 扫描磁盘、补算 dHash 与加载模型同时进行
+        hash_missing(con)
         loader.join()
         if "error" in loaded:
             raise loaded["error"]
@@ -244,7 +270,9 @@ def rescan():
     def run():
         try:
             con = open_db(CFG["index_dir"])
-            index_new(con, scan(con))
+            sync = scan(con)
+            hash_missing(con)
+            index_new(con, sync)
             con.close()
         except Exception as e:
             log.exception("扫描失败")
@@ -384,6 +412,143 @@ def similar(pid: int, offset: int = OFFSET, limit: int = LIMIT, kind: str = KIND
     return {"results": hits, "has_more": more, "took_ms": round((time.perf_counter() - t0) * 1000)}
 
 
+QUERY_MAX_MB = 50  # 查询图片的大小上限：手机照片一般不到 20 MB
+QUERY_CACHE = 32  # 记住最近这么多张查询图片的向量
+
+
+def too_large():
+    return HTTPException(413, {"code": "image_too_large", "mb": QUERY_MAX_MB})
+
+
+async def read_body(request):
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > QUERY_MAX_MB * 2**20:
+        raise too_large()
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > QUERY_MAX_MB * 2**20:
+            raise too_large()
+    return bytes(data)
+
+
+def read_query_file(raw):
+    """拖进窗口或在对话框里选的图片按路径读：界面里的脚本读不了任意本机文件。"""
+    path = Path(raw)
+    try:
+        if not raw or not path.is_absolute() or not path.is_file():
+            raise FileNotFoundError(raw)
+        if path.stat().st_size > QUERY_MAX_MB * 2**20:
+            raise too_large()
+        return path.read_bytes()
+    except OSError as e:
+        raise HTTPException(404, {"code": "file_not_found", "path": raw}) from e
+
+
+def encode_query(data):
+    """解码查询图片并编码，返回 (查询编号, {向量, 预览小图, 宽, 高})。字节相同的图编号相同，不重复编码。"""
+    qid = hashlib.sha1(data).hexdigest()[:16]
+    with S.query_lock:
+        if qid in S.queries:
+            S.queries.move_to_end(qid)
+            return qid, S.queries[qid]
+    try:
+        im, w, h, _ = open_image(io.BytesIO(data))
+    except Exception as e:  # 不是图片、文件损坏、像素多得离谱（Pillow 的解压炸弹保护）等
+        raise HTTPException(400, {"code": "image_unreadable"}) from e
+    with S.lock:
+        vec = S.model.encode([{"image": im}], normalize_embeddings=True, convert_to_tensor=True,
+                             show_progress_bar=False, processing_kwargs={"image": {"max_soft_tokens": IMAGE_TOKENS}})[0]
+    small = im.copy()
+    small.thumbnail((160, 160))
+    buf = io.BytesIO()
+    small.save(buf, "JPEG", quality=80)
+    entry = {"vec": vec, "width": w, "height": h,
+             "preview": "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()}
+    with S.query_lock:
+        S.queries[qid] = entry
+        while len(S.queries) > QUERY_CACHE:
+            S.queries.popitem(last=False)
+    return qid, entry
+
+
+@app.post("/api/image-query")
+async def image_query(request: Request):
+    """以图搜图第一步：收下图片并编码，返回查询编号（翻页时用）和预览小图。
+    图片可以是请求体里的原始字节（Content-Type 为 image/* 或 application/octet-stream：粘贴的、浏览器里选的），
+    也可以是 JSON {"path": 本机路径}（拖进窗口、在对话框里选的）。不收表单和纯文本：
+    那几种类型跨域发送时不用预检，任何网页都能直接发过来。"""
+    if S.phase == "error":
+        raise HTTPException(500, S.error)
+    if S.phase != "ready":  # 模型对象有了但还在预热时也不接，免得和启动流程同时用模型
+        raise HTTPException(503, {"code": "model_loading"})
+    t0 = time.perf_counter()
+    ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if ctype == "application/json":
+        try:
+            raw = (await request.json()).get("path")
+        except (ValueError, AttributeError) as e:
+            raise HTTPException(400, {"code": "invalid_request"}) from e
+        data = await run_in_threadpool(read_query_file, str(raw or "").strip())
+    elif ctype.startswith("image/") or ctype == "application/octet-stream":
+        data = await read_body(request)
+    else:
+        raise HTTPException(415, {"code": "invalid_request"})
+    qid, q = await run_in_threadpool(encode_query, data)
+    return {"qid": qid, "preview": q["preview"], "width": q["width"], "height": q["height"],
+            "took_ms": round((time.perf_counter() - t0) * 1000)}
+
+
+@app.get("/api/image-search/{qid}")
+def image_search(qid: str, offset: int = OFFSET, limit: int = LIMIT, kind: str = KIND, start: float | None = None,
+                 end: float | None = None):
+    """以图搜图第二步：按和查询图片的相似度排序。库里有这张图（或它的副本）时会排在最前面。"""
+    snap = get_snap(need_vectors=True)
+    with S.query_lock:
+        q = S.queries.get(qid)
+    if q is None:  # 后台服务重启过，或之后又搜过很多张图：界面会重新上传
+        raise HTTPException(404, {"code": "query_expired"})
+    t0 = time.perf_counter()
+    scores = (snap.mat @ q["vec"].to(snap.mat.device, snap.mat.dtype)).float()
+    hits, more = page_by_score(snap, scores, offset, limit, kind, start=start, end=end)
+    return {"results": hits, "has_more": more, "took_ms": round((time.perf_counter() - t0) * 1000)}
+
+
+DUP_CAT = Query("all", pattern="^(all|identical|near|similar)$")
+
+
+@app.get("/api/duplicates")
+def duplicates(offset: int = OFFSET, limit: int = LIMIT, kind: str = KIND, cat: str = DUP_CAT,
+               start: float | None = None, end: float | None = None):
+    """重复照片，按组列出（一组不拆到两页），每张标上建议保留 / 完全相同 / 几乎相同 / 相似。只读，不删任何照片。"""
+    from .duplicates import CATEGORIES, find_duplicates, page_duplicates
+
+    snap = get_snap(need_vectors=True)
+    t0 = time.perf_counter()
+    with S.dup_lock:
+        if snap.dups is None:
+            snap.dups = find_duplicates(snap)
+            log.info("重复照片：%d 组，用时 %.1fs", len(snap.dups), time.perf_counter() - t0)
+
+    def match(pid):
+        return (kind == "all" or snap.meta[pid]["kind"] == kind) and in_range(snap.time_of[pid], start, end)
+
+    page = page_duplicates(snap.dups, match, cat, offset, limit)
+    results = []
+    for g in page["groups"]:
+        head = {"cat": g["cat"], "cats": [c for c in CATEGORIES if c in g["cats"]], "n": len(g["ids"]),
+                "extra": g["extra"], "taken": g["taken"]}
+        for k, pid in enumerate(g["ids"]):
+            r = item(snap, pid)
+            r["dup"] = {"g": g["ids"][0], "role": g["roles"][pid], **({"head": head} if k == 0 else {})}
+            results.append(r)
+    return {"results": results, "has_more": page["has_more"], "total": page["photos"], "groups": page["count"],
+            "extra": page["extra"], "counts": page["counts"], "took_ms": round((time.perf_counter() - t0) * 1000)}
+
+
 @app.get("/api/library")
 def library():
     """图库设置面板：照片文件夹、各自张数与是否可访问、索引统计。"""
@@ -439,6 +604,24 @@ def update_library(body: LibraryUpdate):
         S.rescan_again = True
         return {"photo_dirs": dirs, "rescan": "after_load"}
     return {"photo_dirs": dirs, "rescan": rescan()}
+
+
+class IdList(BaseModel):
+    ids: list[int] = Field(max_length=5000)
+
+
+@app.post("/api/missing")
+def missing(body: IdList):
+    """这些照片里哪些已经被删掉了（用户整理重复照片时在资源管理器里删的），界面据此标出“已删除”。
+    所在的照片文件夹整个访问不到（NAS 断开等）时不算删除。"""
+    snap = get_snap(need_vectors=False)
+    online = [d for d in CFG["photo_dirs"] if os.path.isdir(d)]
+    gone = []
+    for pid in body.ids:
+        path = snap.meta[pid]["path"] if pid in snap.meta else None
+        if path and any(is_under(path, d) for d in online) and not os.path.exists(path):
+            gone.append(pid)
+    return {"missing": gone}
 
 
 class ExportRequest(BaseModel):

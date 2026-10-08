@@ -21,7 +21,7 @@ def test_every_error_code_has_text():
     needed |= {f"err.{c}" for c in re.findall(r'^\s+code = "(\w+)"', common, re.M)}  # AppError 各子类
     needed |= {"warn.dirs_offline", "warn.scan_failed"}
     needed |= {f"stage.{c}" for c in ("reading_index", "loading_model", "downloading_model")}
-    needed |= {f"task.{c}" for c in ("scan", "embed", "group")}
+    needed |= {f"task.{c}" for c in ("scan", "hash", "embed", "group")}
     needed |= {f"backend.{c}" for c in re.findall(r'BackendError::new\("(\w+)"', shell)}
     assert len(needed) > 15  # 正则失效时不要悄悄通过
     assert len(LOCALES) >= 2

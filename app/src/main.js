@@ -104,9 +104,15 @@ async function getJSON(path, params = {}) {
     backendDown({ code: "unreachable" });
     throw new Error(t("backend.unreachable"));
   }
+  return readJSON(res);
+}
+
+async function readJSON(res) {
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(errorText(data.detail) || res.statusText);
-  return data;
+  if (res.ok) return data;
+  const err = new Error(errorText(data.detail) || res.statusText);
+  err.code = data.detail?.code; // 个别错误要区别处理，例如以图搜图过期了就重新上传
+  throw err;
 }
 
 /* 后端报的错误是 {code, ...参数}，按当前语言显示；FastAPI 参数校验失败时是列表 */
@@ -167,7 +173,8 @@ async function pollStatus() {
   if (s.searchable && app.pending) {
     const spec = app.pending;
     app.pending = null;
-    openView(spec);
+    if (spec.mode === "image" && !spec.path) runImageSearch(spec); // 以图搜图要先上传图片
+    else openView(spec);
   }
   // 新照片加入索引（编码过程中每约 1000 张、或扫描结束）：在首页顶部就直接刷新，翻到下面了就只提示
   if (prev && (s.count !== prev.count || (prev.task && !s.task)) && app.view?.mode === "recent" && !app.stack.length) {
@@ -244,7 +251,7 @@ function goHome() {
 
 function reloadView() {
   const v = app.view;
-  if (v) openView({ mode: v.mode, query: v.query, label: v.label, path: v.path }, false);
+  if (v) openView({ mode: v.mode, query: v.query, label: v.label, path: v.path, source: v.source, image: v.image, cat: v.cat }, false);
 }
 
 function back() {
@@ -292,6 +299,140 @@ function submitQuery(raw) {
     return;
   }
   requestView({ mode: "search", query: q, label: t("summary.query", { q }), path: `/api/search?q=${encodeURIComponent(q)}` });
+}
+
+function findSimilar(r) {
+  if (viewer.open) viewer.close();
+  requestView({ mode: "similar", label: t("summary.similar_to", { name: r.name }), path: `/api/similar/${r.id}` });
+}
+
+const dupSpec = (cat = "all") => ({ mode: "dups", label: t("summary.dups"), path: "/api/duplicates", cat });
+
+function openDups() {
+  if (app.view?.mode === "dups" && !app.pending) return;
+  requestView(dupSpec());
+}
+
+/* ---------- 以图搜图：选图、拖进窗口、粘贴 ---------- */
+
+const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif|heic|heif|tiff?)$/i;
+const baseName = (path) => path.split(/[\\/]/).pop();
+
+/* source 是 {path, name}（对话框里选的、拖进窗口的文件）或 {blob, name}（粘贴的、浏览器里选的） */
+function searchByImage(source) {
+  for (const d of [viewer, settings, help]) if (d.open) d.close();
+  const label = source.name ? t("summary.similar_to", { name: source.name }) : t("summary.similar_to_pasted");
+  const spec = { mode: "image", label, source };
+  if (app.status?.searchable) {
+    runImageSearch(spec);
+  } else {
+    app.pending = spec; // 模型还没就绪：就绪后自动上传并搜索
+    updateToolbar();
+  }
+}
+
+let imageSeq = 0; // 连着拖入几张图时只认最后一张，先发的上传晚回来也不覆盖
+
+async function runImageSearch(spec) {
+  const seq = ++imageSeq;
+  let slow = false;
+  const timer = setTimeout(() => { // 一般 0.1 秒左右就好，慢的时候才提示
+    slow = true;
+    toast(t("image.reading"), { sticky: true });
+  }, 400);
+  try {
+    spec.image = await postImage(spec.source);
+  } catch (e) {
+    clearTimeout(timer);
+    if (seq !== imageSeq) return;
+    toast(t("image.failed", { error: e.message }));
+    updateToolbar();
+    return;
+  }
+  clearTimeout(timer);
+  if (seq !== imageSeq) return;
+  if (slow) hideToast();
+  $("#q").value = "";
+  openView({ ...spec, path: `/api/image-search/${spec.image.qid}` });
+}
+
+async function postImage(source) {
+  let res;
+  try {
+    res = await fetch(`${app.api}/api/image-query`, source.path
+      ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: source.path }) }
+      : { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: source.blob });
+  } catch {
+    throw new Error(t("err.unreachable"));
+  }
+  return readJSON(res);
+}
+
+async function pickImage() {
+  if (!tauri?.dialog) return $("#img-file").click();
+  const path = await tauri.dialog.open({
+    title: t("image.choose"),
+    filters: [{ name: t("image.filter"), extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff"] }],
+  });
+  if (path) searchByImage({ path, name: baseName(path) });
+}
+
+const drop = $("#drop");
+
+function showDrop(ok) {
+  drop.classList.toggle("bad", !ok);
+  $("#drop-text").textContent = t(ok ? "image.drop" : "image.drop_bad");
+  if (!drop.matches(":popover-open")) drop.showPopover();
+}
+
+function hideDrop() {
+  if (drop.matches(":popover-open")) drop.hidePopover();
+}
+
+function setupImageDrop() {
+  if (tauri) {
+    // Tauri 窗口里文件拖放由外壳接管（网页收不到 drop 事件），这里拿到的是文件路径
+    tauri.webview.getCurrentWebview().onDragDropEvent(({ payload: p }) => {
+      if (p.type === "enter") {
+        showDrop(p.paths.some((x) => IMAGE_EXT.test(x)));
+      } else if (p.type === "leave") {
+        hideDrop();
+      } else if (p.type === "drop") {
+        hideDrop();
+        const path = p.paths.find((x) => IMAGE_EXT.test(x));
+        if (path) searchByImage({ path, name: baseName(path) });
+        else if (p.paths.length) toast(t("image.not_image"));
+      }
+    }).catch(() => {});
+    return;
+  }
+  // 浏览器调试：用网页的拖放事件。进出子元素时 dragenter/dragleave 成对触发，计数判断是否真的离开了窗口
+  let depth = 0;
+  const hasFiles = (e) => e.dataTransfer?.types.includes("Files");
+  document.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const items = [...e.dataTransfer.items];
+    if (depth++ === 0) showDrop(items.some((it) => it.kind === "file" && (!it.type || it.type.startsWith("image/"))));
+  });
+  document.addEventListener("dragover", (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  document.addEventListener("dragleave", (e) => {
+    if (hasFiles(e) && --depth <= 0) {
+      depth = 0;
+      hideDrop();
+    }
+  });
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    hideDrop();
+    const file = [...e.dataTransfer.files].find((f) => f.type.startsWith("image/") || IMAGE_EXT.test(f.name));
+    if (file) searchByImage({ blob: file, name: file.name });
+    else toast(t("image.not_image"));
+  });
 }
 
 /* 最近搜索：只存在本机（WebView 的 localStorage），读写失败时当作没有记录 */
@@ -466,13 +607,24 @@ async function loadPage(reset = false) {
   try {
     const params = { offset: v.results.length, limit: PAGE, kind: v.kind };
     if (v.time) Object.assign(params, { start: v.time.start, end: v.time.end });
-    const data = await getJSON(v.path, params);
+    if (v.mode === "dups") params.cat = v.cat;
+    let data;
+    try {
+      data = await getJSON(v.path, params);
+    } catch (e) {
+      // 以图搜图的查询编号过期了（后台服务重启过，或之后又搜了很多张图）：重新上传同一张图再查
+      if (e.code !== "query_expired" || !v.source) throw e;
+      v.image = await postImage(v.source);
+      v.path = `/api/image-search/${v.image.qid}`;
+      data = await getJSON(v.path, params);
+    }
     if (app.view !== v) return;
     v.results.push(...data.results);
     v.hasMore = data.has_more;
     v.total = data.total ?? v.total;
     v.photos = data.photos ?? v.photos;
     v.tookMs = data.took_ms ?? v.tookMs;
+    if (v.mode === "dups") Object.assign(v, { groups: data.groups, extra: data.extra, counts: data.counts });
   } catch (e) {
     if (app.view !== v) return;
     v.hasMore = false;
@@ -504,7 +656,10 @@ function monthOf(taken) {
   return taken ? fmtMonth(Number(taken.slice(0, 4)), Number(taken.slice(5, 7))) : t("grid.unknown_date");
 }
 
+const percent = (score) => `${Math.round(score * 100)}%`;
+
 function makeTile(r, i) {
+  const mode = app.view?.mode;
   const tile = document.createElement("button");
   tile.type = "button";
   tile.className = "tile";
@@ -513,14 +668,38 @@ function makeTile(r, i) {
   const img = document.createElement("img");
   img.loading = "lazy";
   img.decoding = "async";
+  img.draggable = false;
   img.alt = r.name;
   img.src = thumbUrl(r.id);
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = (r.taken_at || "").slice(0, 10);
+  const date = (r.taken_at || "").slice(0, 10);
+  if (mode === "dups") {
+    // 比较重复照片时要看清晰度和在哪个文件夹（完全相同的两张文件名往往也一样），一直显示
+    tile.title = r.path;
+    meta.classList.add("always");
+    const size = [r.width ? `${r.width}×${r.height}` : "", r.bytes ? formatBytes(r.bytes) : ""].filter(Boolean).join(" · ");
+    const folder = r.path.split(/[\\/]/).slice(-2, -1)[0];
+    meta.append(Object.assign(document.createElement("span"), { textContent: size }),
+      Object.assign(document.createElement("span"), { className: "where", textContent: folder ? `${folder}${r.path.includes("\\") ? "\\" : "/"}${r.name}` : r.name }));
+  } else {
+    const scored = (mode === "similar" || mode === "image") && typeof r.score === "number";
+    meta.textContent = scored ? [date, percent(r.score)].filter(Boolean).join(" · ") : date;
+    if (scored && r.score >= 0.9) meta.classList.add("always"); // 很可能是同一张照片：不用悬停也显示相似度
+  }
   const check = Object.assign(document.createElement("span"), { className: "check", title: t("grid.select") });
   tile.append(img, meta, check);
   tile.classList.toggle("selected", app.selected.has(i));
+  if (mode === "dups") {
+    const role = r.dup?.role;
+    if (role === "keep" || role === "identical" || role === "near") {
+      tile.append(Object.assign(document.createElement("span"), {
+        className: `role ${role}`, textContent: t(`dups.role_${role}`), title: t(`dups.role_${role}_title`),
+      }));
+    }
+    if (r.gone) markGone(tile);
+    return tile;
+  }
   if (r.count > 1) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -529,11 +708,43 @@ function makeTile(r, i) {
     badge.append(String(r.count));
     tile.append(badge);
   }
+  const similar = Object.assign(document.createElement("span"), { className: "similar-btn", title: t("grid.find_similar") });
+  similar.innerHTML = SIMILAR_ICON;
+  tile.append(similar);
   return tile;
 }
 
 const STACK_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">'
   + '<rect x="2" y="5" width="9" height="9" rx="1.5"/><path d="M5 2.5h7a1.5 1.5 0 0 1 1.5 1.5v7"/></svg>';
+const SIMILAR_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true">'
+  + '<circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3.5 3.5"/></svg>';
+
+/* 重复照片页每组的标题：类别 · 张数 · 日期 · 可腾出的空间，有多余副本时可一键选中 */
+function dupHead(r) {
+  const h = r.dup.head;
+  const box = Object.assign(document.createElement("div"), { className: "group dup-head" });
+  const parts = [t("count.photos", { n: h.n })];
+  const day = h.taken ? new Date(h.taken.replace(" ", "T")) : null;
+  if (day && !Number.isNaN(day.getTime())) parts.push(fmtDay(day));
+  if (h.extra) parts.push(t("dups.can_free", { size: formatBytes(h.extra) }));
+  box.append(
+    Object.assign(document.createElement("span"), { textContent: t(`dups.cat_${h.cat}`), title: t(`dups.cat_${h.cat}_title`) }),
+    Object.assign(document.createElement("span"), { className: "dup-meta", textContent: parts.join(" · ") }),
+  );
+  if (h.extra) {
+    const btn = Object.assign(document.createElement("button"), { type: "button", className: "link", textContent: t("dups.select_extras") });
+    btn.dataset.group = r.dup.g;
+    box.append(btn);
+  }
+  return box;
+}
+
+function selectExtras(g) {
+  app.view.results.forEach((r, i) => {
+    if (r.dup?.g === g && (r.dup.role === "identical" || r.dup.role === "near")) setSelected(i, true);
+  });
+  updateSelbar();
+}
 
 function render(reset) {
   const v = app.view;
@@ -555,6 +766,8 @@ function render(reset) {
         frag.append(h);
         lastGroup = group;
       }
+    } else if (v.mode === "dups" && r.dup?.head) {
+      frag.append(dupHead(r));
     }
     frag.append(makeTile(r, rendered));
   }
@@ -562,6 +775,11 @@ function render(reset) {
   grid.querySelector(".message, .welcome")?.remove();
   if (!v.results.length && v.mode === "recent" && v.total === 0 && v.kind === "all") {
     grid.append(welcomeCard());
+  } else if (!v.results.length && v.mode === "dups" && !v.error) {
+    const box = Object.assign(document.createElement("div"), { className: "welcome" });
+    box.append(Object.assign(document.createElement("h2"), { textContent: t("grid.no_dups") }),
+      Object.assign(document.createElement("p"), { textContent: t("grid.no_dups_hint") }));
+    grid.append(box);
   } else if (!v.results.length) {
     const p = document.createElement("p");
     p.className = "message";
@@ -595,26 +813,46 @@ function setSentinel() {
   $("#sentinel").textContent = text;
 }
 
-function setSummary(label, detail) {
-  const b = document.createElement("b");
-  b.textContent = label;
-  $("#summary").replaceChildren(b, detail ? ` · ${detail}` : "");
+/* 列表上方的说明；以图搜图时前面放查询图片的小图 */
+function setSummary(label, detail, thumb) {
+  const nodes = [];
+  if (thumb) nodes.push(Object.assign(document.createElement("img"), { className: "q-thumb", src: thumb, alt: "" }));
+  nodes.push(Object.assign(document.createElement("b"), { textContent: label }), detail ? ` · ${detail}` : "");
+  $("#summary").replaceChildren(...nodes);
 }
 
 function updateToolbar() {
   const v = app.view;
   $("#back").hidden = !app.stack.length;
   $("#suggest").hidden = !(v && v.mode === "recent") || Boolean(app.pending) || app.status?.count === 0;
+  const dups = v?.mode === "dups" && !app.pending;
+  $("#dup-bar").hidden = !dups;
+  $("#dups-btn").setAttribute("aria-pressed", String(dups || app.pending?.mode === "dups"));
+  $("#dups-btn").hidden = app.status?.count === 0; // 图库还是空的
+  if (dups) syncDupBar(v);
   if (app.pending) return setSummary(app.pending.label, t("summary.pending"));
   if (!v) return $("#summary").replaceChildren(t("summary.reading"));
   if (v.mode === "recent") {
     setSummary(t(`summary.${v.kind}`), v.photos != null ? t("summary.count", { n: v.photos }) : "");
   } else if (v.error && !v.results.length) {
-    setSummary(v.label, t("summary.search_failed"));
+    setSummary(v.label, t("summary.search_failed"), v.image?.preview);
   } else if (v.mode === "search") {
     setSummary(v.label, v.loading && !v.results.length ? t("summary.searching") : t("summary.by_relevance", { ms: v.tookMs ?? "-" }));
+  } else if (v.mode === "dups") {
+    const parts = v.groups == null ? [t("summary.dups_loading")] : [t("dups.groups", { n: v.groups }), t("count.photos", { n: v.total })];
+    if (v.extra) parts.push(t("dups.can_free", { size: formatBytes(v.extra) }));
+    setSummary(v.label, parts.join(" · "));
   } else {
-    setSummary(v.label, t("summary.by_similarity"));
+    setSummary(v.label, v.loading && !v.results.length ? t("summary.searching") : t("summary.by_similarity"), v.image?.preview);
+  }
+}
+
+/* 重复照片页的类别按钮：当前类别高亮，数字是各类的组数（随照片/截图、时间筛选变化） */
+function syncDupBar(v) {
+  for (const b of $$("#dup-cat button")) {
+    b.setAttribute("aria-pressed", String(b.dataset.cat === v.cat));
+    const n = v.counts?.[b.dataset.cat];
+    b.querySelector(".n").textContent = n == null ? "" : n.toLocaleString(LANG);
   }
 }
 
@@ -678,9 +916,10 @@ function showPhoto(r) {
 }
 
 function renderStrip(r) {
-  $("#v-group").hidden = !(r.count > 1);
+  const show = r.count > 1 && app.view.mode !== "dups"; // 重复照片页里整组已经平铺在列表中
+  $("#v-group").hidden = !show;
   $("#v-strip").replaceChildren();
-  if (!(r.count > 1)) return;
+  if (!show) return;
   $("#v-group-label").textContent = t("viewer.burst_label", { n: r.count });
   const i = app.current;
   getJSON(`/api/group/${r.id}`)
@@ -722,12 +961,16 @@ function fillInfo(r) {
   $("#v-size").textContent = pixels
     ? t("viewer.dimensions_value", { w: r.width, h: r.height, mp: (pixels / 1e6).toFixed(1), wan: Math.round(pixels / 1e4) })
     : t("viewer.unknown");
-  $("#v-bytes").textContent = "…";
+  $("#v-bytes").textContent = r.bytes ? formatBytes(r.bytes) : "…";
   $("#v-camera").textContent = "…";
-  // 文本搜索的排序分扣过基线，数值本身对用户没有意义，只在“找相似”时显示相似度
-  const hasScore = v.mode === "similar" && typeof r.score === "number";
+  // 文本搜索的排序分扣过基线，数值本身对用户没有意义，只在找相似、以图搜图时显示相似度
+  const hasScore = (v.mode === "similar" || v.mode === "image") && typeof r.score === "number";
   $("#v-score-label").hidden = $("#v-score").hidden = !hasScore;
-  if (hasScore) $("#v-score").textContent = `${Math.round(r.score * 100)}%`;
+  if (hasScore) $("#v-score").textContent = percent(r.score);
+  // 重复照片页里逐张比较时，说明这张是建议保留的、完全相同的，还是几乎相同的
+  const role = v.mode === "dups" && r.dup?.role !== "similar" ? r.dup?.role : null;
+  $("#v-role-label").hidden = $("#v-role").hidden = !role;
+  if (role) $("#v-role").textContent = t(`viewer.dup_${role}`);
   $("#v-path").textContent = r.path;
   $("#v-prev").disabled = i <= 0;
   $("#v-next").disabled = i >= v.results.length - 1;
@@ -871,6 +1114,7 @@ viewer.addEventListener("keydown", (e) => {
     setPlaying(!slideTimer);
   } else if (key === "f") setFullscreen(!fullscreen);
   else if (key === "i") toggleInfo();
+  else if (key === "s" && !e.ctrlKey && !e.metaKey) findSimilar(app.shown);
 });
 viewer.addEventListener("cancel", (e) => {
   // Esc 依次：退出放大 → 退出全屏 → 关闭预览
@@ -912,6 +1156,11 @@ function toast(text, { action, onAction, sticky } = {}) {
   if (!sticky) toastTimer = setTimeout(() => el.hidePopover(), action ? 6000 : 2600);
 }
 
+function hideToast() {
+  clearTimeout(toastTimer);
+  if ($("#toast").matches(":popover-open")) $("#toast").hidePopover();
+}
+
 async function copyImage() {
   const r = app.shown;
   try {
@@ -937,11 +1186,46 @@ async function copyPath() {
 }
 
 async function opener(command, args) {
+  if (app.view?.mode === "dups") checkGoneOnReturn = true; // 用户可能会去资源管理器里删掉照片
   try {
     await tauri.core.invoke(`plugin:opener|${command}`, args);
   } catch (e) {
     toast(t("toast.action_failed", { error: e }));
   }
+}
+
+/* 整理重复照片时，用户在资源管理器里删完照片回到窗口：标出列表里已删除的，再重新扫描让索引跟上 */
+let checkGoneOnReturn = false;
+
+async function markDeleted() {
+  const v = app.view;
+  if (!checkGoneOnReturn || v?.mode !== "dups") return;
+  checkGoneOnReturn = false;
+  const ids = v.results.filter((r) => !r.gone).map((r) => r.id);
+  let d;
+  try {
+    d = await sendJSON("POST", "/api/missing", { ids });
+  } catch {
+    return;
+  }
+  if (app.view !== v || !d.missing.length) return;
+  const gone = new Set(d.missing);
+  v.results.forEach((r, i) => {
+    if (!gone.has(r.id)) return;
+    r.gone = true;
+    setSelected(i, false);
+    const tile = tileAt(i);
+    if (tile) markGone(tile);
+  });
+  updateSelbar();
+  toast(t("dups.removed", { n: gone.size }));
+  sendJSON("POST", "/api/rescan").then(() => startPolling(3000)).catch(() => {});
+}
+
+function markGone(tile) {
+  tile.classList.add("gone");
+  tile.querySelector(".role")?.remove();
+  tile.append(Object.assign(document.createElement("span"), { className: "role gone", textContent: t("dups.deleted") }));
 }
 
 /* ---------- 多选与导出 ---------- */
@@ -959,7 +1243,7 @@ function updateSelbar() {
 
 function setSelected(i, on) {
   const r = photoAt(i);
-  if (!r) return;
+  if (!r || (on && r.gone)) return; // 已经删掉的不能再选
   if (on) app.selected.set(i, r);
   else app.selected.delete(i);
   tileAt(i)?.classList.toggle("selected", on);
@@ -999,6 +1283,19 @@ async function copySelectedPaths() {
   }
 }
 
+/* 在资源管理器里选中这些照片（每个文件夹开一个窗口），删不删由用户自己决定；本程序从不删除照片 */
+async function revealSelected() {
+  const paths = [...app.selected.values()].map((r) => r.path);
+  const folders = new Set(paths.map((p) => p.slice(0, Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"))).toLowerCase()));
+  if (folders.size > 3) {
+    const ok = await tauri.dialog.ask(t("sel.reveal_many", { n: folders.size }), {
+      title: t("sel.reveal"), kind: "info", okLabel: t("sel.reveal"), cancelLabel: t("common.cancel"),
+    });
+    if (!ok) return;
+  }
+  opener("reveal_item_in_dir", { paths });
+}
+
 async function exportSelected() {
   const items = [...app.selected.values()];
   if (!items.length) return;
@@ -1006,7 +1303,8 @@ async function exportSelected() {
     ? await tauri.dialog.open({ directory: true, title: t("export.choose") })
     : prompt(t("export.prompt"));
   if (!dest) return;
-  const groups = items.filter((r) => r.count > 1).length;
+  // 重复照片页里每张都是单独列出来挑的，不再问要不要整组导出
+  const groups = app.view.mode === "dups" ? 0 : items.filter((r) => r.count > 1).length;
   let includeGroups = false;
   if (groups) {
     const question = t("export.groups_question", { n: groups });
@@ -1078,9 +1376,7 @@ async function sendJSON(method, path, body) {
   } catch {
     throw new Error(t("err.unreachable"));
   }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(errorText(data.detail) || res.statusText);
-  return data;
+  return readJSON(res);
 }
 
 function openSettings() {
@@ -1144,9 +1440,18 @@ async function renderLibrary() {
   const ready = app.status?.phase === "ready";
   const photos = t("count.photos", { n: library.count });
   const shots = t("count.screenshots", { n: library.screenshots });
+  const groups = statRow(t("settings.stat_groups"), library.groups ? t("settings.stat_groups_value", { n: library.groups }) : t("settings.none"));
+  if (library.groups) {
+    const review = Object.assign(document.createElement("button"), { type: "button", className: "link", textContent: t("settings.review") });
+    review.addEventListener("click", () => {
+      settings.close();
+      openDups();
+    });
+    groups[1].append(" · ", review);
+  }
   $("#lib-stats").replaceChildren(
     ...statRow(t("settings.stat_photos"), library.screenshots ? t("settings.stat_photos_value", { photos, shots }) : photos),
-    ...statRow(t("settings.stat_groups"), library.groups ? t("settings.stat_groups_value", { n: library.groups }) : t("settings.none")),
+    ...groups,
     ...statRow(t("settings.stat_index"), t("settings.stat_index_value", { dir: library.index_dir, size: formatBytes(library.index_bytes) })),
     ...statRow(t("settings.stat_model"), `${library.model}${library.device ? ` · ${library.device}` : ""}`),
     ...statRow(t("settings.stat_last_scan"), library.last_scan || t("settings.never_scanned")),
@@ -1218,10 +1523,14 @@ $("#home").addEventListener("click", () => {
 });
 $("#back").addEventListener("click", back);
 $("#grid").addEventListener("click", (e) => {
+  if ($("#grid").classList.contains("stale")) return;
+  const extras = e.target.closest(".dup-head .link");
+  if (extras) return selectExtras(Number(extras.dataset.group));
   const tile = e.target.closest(".tile");
-  if (!tile || $("#grid").classList.contains("stale")) return;
+  if (!tile) return;
   const i = Number(tile.dataset.index);
-  if (e.shiftKey && app.lastPick != null) selectRange(app.lastPick, i);
+  if (e.target.closest(".similar-btn") && !app.selected.size) findSimilar(photoAt(i));
+  else if (e.shiftKey && app.lastPick != null) selectRange(app.lastPick, i);
   else if (e.target.closest(".check") || e.ctrlKey || e.metaKey || app.selected.size) toggleSelect(i);
   else openViewer(i);
 });
@@ -1241,7 +1550,27 @@ $("#grid").addEventListener("keyup", (e) => {
 });
 $("#sel-all").addEventListener("click", selectAllLoaded);
 $("#sel-copy").addEventListener("click", copySelectedPaths);
+$("#sel-reveal").addEventListener("click", revealSelected);
 $("#sel-export").addEventListener("click", exportSelected);
+$("#img-btn").addEventListener("click", pickImage);
+$("#img-file").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  e.target.value = ""; // 再选同一个文件也要触发
+  if (file) searchByImage({ blob: file, name: file.name });
+});
+// Ctrl+V 粘贴图片：截图工具、浏览器里“复制图片”都可以。输入框里粘贴文字照常
+document.addEventListener("paste", (e) => {
+  const file = [...(e.clipboardData?.files || [])].find((f) => f.type.startsWith("image/") || IMAGE_EXT.test(f.name));
+  if (!file || (e.target instanceof HTMLInputElement && e.clipboardData.types.includes("text/plain"))) return;
+  e.preventDefault();
+  searchByImage({ blob: file, name: file.name === "image.png" ? "" : file.name }); // 截图粘贴进来都叫 image.png
+});
+$("#dups-btn").addEventListener("click", openDups);
+for (const btn of $$("#dup-cat button")) {
+  btn.addEventListener("click", () => {
+    if (app.view?.mode === "dups" && btn.dataset.cat !== app.view.cat) openView(dupSpec(btn.dataset.cat), false);
+  });
+}
 $("#sel-clear").addEventListener("click", clearSelection);
 const help = $("#help");
 $("#open-help").addEventListener("click", () => {
@@ -1294,11 +1623,7 @@ tauri?.event.listen("backend-exited", (e) => backendDown(e.payload));
 $("#v-prev").addEventListener("click", () => step(-1));
 $("#v-next").addEventListener("click", () => step(1));
 $("#v-close").addEventListener("click", () => viewer.close());
-$("#v-similar").addEventListener("click", () => {
-  const r = app.shown;
-  viewer.close();
-  requestView({ mode: "similar", label: t("summary.similar_to", { name: r.name }), path: `/api/similar/${r.id}` });
-});
+$("#v-similar").addEventListener("click", () => findSimilar(app.shown));
 $("#v-copy").addEventListener("click", copyImage);
 $("#v-copy-path").addEventListener("click", copyPath);
 $("#v-open").addEventListener("click", () => opener("open_path", { path: app.shown.path }));
@@ -1331,6 +1656,7 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("mouseup", (e) => {
   if (e.button === 3) back(); // 鼠标侧键“后退”
 });
+window.addEventListener("focus", markDeleted);
 window.addEventListener("scroll", maybeLoadMore, { passive: true });
 window.addEventListener("resize", maybeLoadMore);
 $("#size-btn").addEventListener("click", () => setGridSize((app.gridSize + 1) % GRID_SIZES.length));
@@ -1354,6 +1680,7 @@ window.addEventListener("wheel", (e) => {
   $("#v-info").classList.toggle("on", !prefs.bareViewer);
   renderChips();
   updateToolbar();
+  setupImageDrop();
   $("#q").focus();
   try {
     await resolveApi();

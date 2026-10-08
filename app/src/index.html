@@ -13,8 +13,15 @@
     <button id="home" class="brand" type="button" data-i18n="app.brand" data-i18n-title="app.home_title">Photo Search</button>
     <form id="search-form" class="search" role="search" autocomplete="off">
       <input id="q" type="search" maxlength="200" data-i18n-placeholder="search.placeholder" data-i18n-aria-label="search.label" data-i18n-title="search.shortcut">
+      <button id="img-btn" class="img-btn" type="button" data-i18n-title="search.image_title" data-i18n-aria-label="search.image">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 15.5 15.5 11 6 19.5"/>
+        </svg>
+      </button>
       <button id="go" type="submit" data-i18n="search.go">Search</button>
     </form>
+    <!-- 浏览器调试时选查询图片用；Tauri 里用系统的打开文件对话框 -->
+    <input id="img-file" type="file" accept="image/*,.heic,.heif" hidden>
     <button id="status" class="status" data-state="starting" type="button" data-i18n-title="status.settings">
       <span class="dot" aria-hidden="true"></span><span id="status-text" role="status" data-i18n="status.starting">Starting</span>
     </button>
@@ -31,6 +38,12 @@
       <button id="back" class="back" type="button" hidden data-i18n="toolbar.back" data-i18n-title="toolbar.back_title">← Back</button>
       <p id="summary" class="summary"></p>
       <button id="refresh-note" class="link" type="button" hidden data-i18n="toolbar.refresh_note">New photos were added — click to refresh</button>
+      <button id="dups-btn" class="tool-btn" type="button" aria-pressed="false" data-i18n-title="toolbar.dups_title">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+          <rect x="2" y="5" width="9" height="9" rx="1.5"/><path d="M5 2.5h7a1.5 1.5 0 0 1 1.5 1.5v7"/>
+        </svg>
+        <span data-i18n="toolbar.dups">Duplicates</span>
+      </button>
       <div class="time-box">
         <button id="time-btn" class="time-btn" type="button" popovertarget="time-menu" aria-haspopup="menu" data-i18n="time.any" data-i18n-title="toolbar.time_title">Any time</button>
         <button id="time-clear" class="time-clear" type="button" hidden data-i18n-aria-label="toolbar.time_clear" data-i18n-title="toolbar.time_clear">×</button>
@@ -57,6 +70,16 @@
         <span class="suggest-label" data-i18n="suggest.try">Try:</span>
         <div class="chips" id="chips"></div>
       </div>
+    </div>
+    <!-- 重复照片页：按重复类型筛选；数字是各类的组数 -->
+    <div id="dup-bar" class="dup-bar" hidden>
+      <div class="seg" id="dup-cat" role="group" data-i18n-aria-label="dups.cats">
+        <button type="button" data-cat="all" aria-pressed="true"><span data-i18n="dups.cat_all">All</span><span class="n"></span></button>
+        <button type="button" data-cat="identical" aria-pressed="false" data-i18n-title="dups.cat_identical_title"><span data-i18n="dups.cat_identical">Identical</span><span class="n"></span></button>
+        <button type="button" data-cat="near" aria-pressed="false" data-i18n-title="dups.cat_near_title"><span data-i18n="dups.cat_near">Near-duplicates</span><span class="n"></span></button>
+        <button type="button" data-cat="similar" aria-pressed="false" data-i18n-title="dups.cat_similar_title"><span data-i18n="dups.cat_similar">Bursts &amp; similar</span><span class="n"></span></button>
+      </div>
+      <p class="hint" data-i18n="dups.readonly">Nothing is deleted here.</p>
     </div>
     <div id="grid" class="grid"></div>
     <p id="sentinel" class="sentinel"></p>
@@ -87,10 +110,11 @@
         <dt data-i18n="viewer.file_size">File size</dt><dd id="v-bytes"></dd>
         <dt data-i18n="viewer.camera">Camera</dt><dd id="v-camera"></dd>
         <dt id="v-score-label" data-i18n="viewer.similarity">Similarity</dt><dd id="v-score"></dd>
+        <dt id="v-role-label" data-i18n="viewer.suggestion">Suggestion</dt><dd id="v-role"></dd>
         <dt data-i18n="viewer.location">Location</dt><dd><span id="v-path"></span> <button class="link" id="v-copy-path" type="button" data-i18n="viewer.copy_path">Copy path</button></dd>
       </dl>
       <div class="actions">
-        <button id="v-similar" class="primary" type="button" data-i18n="viewer.find_similar">Find similar</button>
+        <button id="v-similar" class="primary" type="button" data-i18n="viewer.find_similar" data-i18n-title="viewer.find_similar_title">Find similar</button>
         <button id="v-copy" type="button" data-i18n="viewer.copy_image">Copy image</button>
         <button id="v-open" type="button" data-tauri data-i18n="viewer.open">Open with default app</button>
         <button id="v-reveal" type="button" data-tauri data-i18n="viewer.reveal">Show in folder</button>
@@ -133,6 +157,7 @@
     <span id="sel-count" class="sel-count"></span>
     <button class="btn" id="sel-all" type="button" title="Ctrl+A" data-i18n="sel.all">Select all loaded</button>
     <button class="btn" id="sel-copy" type="button" data-i18n="sel.copy">Copy paths</button>
+    <button class="btn" id="sel-reveal" type="button" data-tauri data-i18n="sel.reveal">Show in folder</button>
     <button class="btn primary" id="sel-export" type="button" data-i18n="sel.export">Export to folder…</button>
     <button class="icon-btn" id="sel-clear" type="button" data-i18n-aria-label="sel.clear" data-i18n-title="sel.clear_title">×</button>
   </div>
@@ -145,6 +170,7 @@
     <section>
       <dl class="stats keys-list">
         <dt data-i18n-html="help.search_key"></dt><dd data-i18n="help.search"></dd>
+        <dt data-i18n-html="help.image_key"></dt><dd data-i18n="help.image"></dd>
         <dt data-i18n-html="help.back_key"></dt><dd data-i18n="help.back"></dd>
         <dt data-i18n-html="help.arrows_key"></dt><dd data-i18n="help.arrows"></dd>
         <dt data-i18n-html="help.enter_key"></dt><dd data-i18n="help.enter"></dd>
@@ -163,6 +189,8 @@
   <div id="suggest-pop" class="menu suggest-pop" popover="manual" role="listbox" data-i18n-aria-label="suggest.box"></div>
 
   <div id="toast" class="toast" role="status" popover="manual"></div>
+  <!-- 拖着图片经过窗口时的提示；放进顶层，预览、设置打开时也盖得住 -->
+  <div id="drop" class="drop" popover="manual"><p id="drop-text" class="drop-box"></p></div>
   <div id="banner" class="banner" role="alert" popover="manual">
     <span id="banner-text"></span>
     <button class="btn" id="banner-action" type="button" data-i18n="banner.restart">Restart background service</button>

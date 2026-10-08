@@ -1,7 +1,21 @@
+import io
+
+import numpy as np
 from conftest import make_photo
+from PIL import Image
 
 from backend.common import open_db
-from backend.indexer import is_under, photo_kind, prepare, sync_files
+from backend.indexer import dhash, hash_pending, is_under, photo_kind, prepare, sync_files
+
+
+def smooth_image(seed, size=(800, 600)):
+    """平滑的随机图（小网格放大），像照片一样有大块明暗变化。"""
+    grid = (np.random.default_rng(seed).random((6, 8, 3)) * 255).astype("uint8")
+    return Image.fromarray(grid).resize(size, Image.BICUBIC)
+
+
+def bits_apart(a, b):
+    return bin((a ^ b) & (2**64 - 1)).count("1")
 
 
 def test_sync_adds_changes_and_removes(library):
@@ -52,8 +66,38 @@ def test_photo_kind_and_is_under():
 
 def test_prepare_reads_exif_and_rotation(tmp_path):
     src = make_photo(tmp_path / "r.jpg", size=(80, 40), taken="2024:05:01 10:20:30", orientation=6)
-    im, w, h, taken = prepare(src, tmp_path / "t.jpg", 0)
+    im, w, h, taken, dh = prepare(src, tmp_path / "t.jpg", 0)
     assert (w, h) == (40, 80)  # 方向 6 表示需要旋转 90°，宽高互换
     assert im.size == (40, 80)
     assert taken == "2024-05-01 10:20:30"
     assert (tmp_path / "t.jpg").exists()
+    assert -2**63 <= dh < 2**63  # 能直接存进 SQLite 的 INTEGER
+
+
+def test_dhash_tells_copies_from_other_photos():
+    """压缩、缩小过的副本 dHash 只差几位；另一张照片差得多。"""
+    photo = smooth_image(0)
+    buf = io.BytesIO()
+    photo.resize((400, 300)).save(buf, "JPEG", quality=60)
+    copy = Image.open(buf)
+    assert bits_apart(dhash(photo), dhash(copy)) <= 4
+    assert bits_apart(dhash(photo), dhash(smooth_image(1))) >= 16
+
+
+def test_changed_file_and_old_index_get_new_dhash(library):
+    """改过的照片 dHash 清空、重新算；0.1.0 建的旧索引从缩略图补算，缩略图丢了就跳过。"""
+    photos, cfg = library
+    a = make_photo(photos / "a.jpg")
+    make_photo(photos / "b.jpg")
+    con = open_db(cfg["index_dir"])
+    sync_files(con, cfg)
+    con.execute("UPDATE photos SET embedding=x'00', dhash=NULL")  # 模拟旧索引：已编码、没有 dHash
+    aid = con.execute("SELECT id FROM photos WHERE path=?", (str(a),)).fetchone()[0]
+    smooth_image(0).save(f"{cfg['index_dir']}/thumbs/{aid}.jpg")  # 只有 a 的缩略图还在
+    assert hash_pending(con, cfg) == 2
+    rows = dict(con.execute("SELECT path, dhash FROM photos").fetchall())
+    assert rows[str(a)] is not None and rows[str(photos / "b.jpg")] is None
+
+    make_photo(a, color=(10, 20, 30), size=(70, 50))  # 照片被改过
+    sync_files(con, cfg)
+    assert con.execute("SELECT dhash FROM photos WHERE path=?", (str(a),)).fetchone()[0] is None
