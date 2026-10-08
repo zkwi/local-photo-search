@@ -35,13 +35,15 @@ Windows may show “Windows protected your PC” because the app isn't code-sign
 - **Dates in the query**: “beach May 2025”, “cat past 30 days” or “去年5月 海边” become a date filter; a date on its own browses that period.
 - **Search by image**: drop a picture into the window, paste one with Ctrl+V, or pick a file with the image button in the search box. Handy for finding the original of a photo someone sent you: it comes first and is labeled **Same photo**.
 - **Duplicate photos**: review identical files, near-duplicates (resized or compressed copies such as ones saved from a chat app, edited versions, bursts with no visible difference) and burst shots group by group, with a suggested photo to keep and each file's resolution, size and folder. Screenshots are only flagged when the files are identical. The app never deletes anything: select the photos you don't need and use **Show in folder** to delete them yourself.
-- **Find similar photos** from any photo in your library, and **browse by month**. Burst shots and duplicates are folded into one tile and can be stepped through in the preview.
+- **Find similar photos** from any photo in your library, and **browse by month** — click a month to see only it, or open **Photos from this day** from any photo. Burst shots and duplicates are folded into one tile and can be stepped through in the preview.
 - **Preview**: zoom into the original (click, or Ctrl+scroll), slideshow, full screen, copy the image (Ctrl+C), show it in its folder. Right-click a photo for these actions anywhere in the app.
 - **Organize**: select several photos (Ctrl/Shift+click, Ctrl+A), then copy their paths, show them in File Explorer or export copies to a folder.
 - **Your library, your folders**: add folders in Settings or drag them into the window; NAS and external drives that may be offline are fine; JPG, PNG, WebP, BMP and HEIC. New, changed and deleted photos are picked up at startup, and the first indexing shows photos as it goes.
 - **Interface in English and Simplified Chinese**, following your system language.
 
 Your photo folders are only read — nothing is modified or moved, and export makes copies. Press `?` in the app for keyboard shortcuts.
+
+![The Duplicates view: identical files, near-duplicates and bursts listed group by group, with the suggested photo to keep](docs/duplicates-en.webp)
 
 ## Why EmbeddingGemma 2?
 
@@ -88,6 +90,7 @@ Text-to-image search needs a model that puts photos and sentences into the same 
 
 - Photos, thumbnails and the index stay on your computer (in the app's `index` folder) and are never uploaded.
 - Recent searches are kept only in the app's local data on this computer; remove them one by one from the search box dropdown.
+- The app never checks for updates by itself. **Settings → Check for updates** just opens the releases page in your browser.
 - The `index` folder holds thumbnails (low-resolution copies of your photos) and `config.json` holds your folder paths, so don't share them.
 - The background service only accepts requests from this computer, and the app window can only load local content. See [SECURITY.md](SECURITY.md) for details and how to report a vulnerability.
 

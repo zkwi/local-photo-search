@@ -79,6 +79,7 @@
         <button type="button" data-cat="near" aria-pressed="false" data-i18n-title="dups.cat_near_title"><span data-i18n="dups.cat_near">Near-duplicates</span><span class="n"></span></button>
         <button type="button" data-cat="similar" aria-pressed="false" data-i18n-title="dups.cat_similar_title"><span data-i18n="dups.cat_similar">Bursts &amp; similar</span><span class="n"></span></button>
       </div>
+      <button class="btn" id="dup-select-all" type="button" hidden data-i18n="dups.select_all_identical">Select all extra copies</button>
       <p class="hint" data-i18n="dups.readonly">Nothing is deleted here.</p>
     </div>
     <div id="grid" class="grid"></div>
@@ -105,7 +106,7 @@
         <div class="strip" id="v-strip"></div>
       </div>
       <dl>
-        <dt data-i18n="viewer.taken">Taken</dt><dd id="v-time"></dd>
+        <dt data-i18n="viewer.taken">Taken</dt><dd><span id="v-time"></span> <button class="link" id="v-day" type="button" data-i18n="viewer.show_day" data-i18n-title="viewer.show_day_title">Photos from this day</button></dd>
         <dt data-i18n="viewer.dimensions">Dimensions</dt><dd id="v-size"></dd>
         <dt data-i18n="viewer.file_size">File size</dt><dd id="v-bytes"></dd>
         <dt data-i18n="viewer.camera">Camera</dt><dd id="v-camera"></dd>
@@ -148,7 +149,11 @@
       <select id="lang-select" class="select" aria-labelledby="lang-title"></select>
     </section>
     <section class="settings-foot">
-      <button class="link" id="open-help" type="button" data-i18n="settings.shortcuts">Keyboard shortcuts (?)</button>
+      <div class="foot-links">
+        <button class="link" id="open-help" type="button" data-i18n="settings.shortcuts">Keyboard shortcuts (?)</button>
+        <button class="link" id="check-updates" type="button" data-i18n="settings.check_updates" data-i18n-title="settings.check_updates_title">Check for updates</button>
+        <button class="link" id="report-issue" type="button" data-i18n="settings.report_issue" data-i18n-title="settings.report_issue_title">Report a problem</button>
+      </div>
       <p class="hint about" id="about" data-i18n="settings.about">Photos, thumbnails and the index stay on this computer and are never uploaded.</p>
     </section>
   </dialog>

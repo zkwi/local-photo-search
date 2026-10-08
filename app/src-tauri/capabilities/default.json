@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口：全屏、按界面语言设置标题、用默认程序打开照片、在资源管理器中定位、选择照片文件夹并确认移除",
+  "description": "主窗口：全屏、按界面语言设置标题、用默认程序打开照片和文件夹、在资源管理器中定位、选择照片文件夹并确认、在浏览器里打开本项目的发布页和问题页",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -13,6 +13,10 @@
     {
       "identifier": "opener:allow-open-path",
       "allow": [{ "path": "**" }]
+    },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://github.com/zkwi/local-photo-search/*" }]
     }
   ]
 }

@@ -2,6 +2,21 @@
 
 Notable changes to this project. The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+
+- **Photos from this day**: in the preview (next to the date, or press `D`) and in the right-click menu. It shows everything taken that day; Back returns to where you were.
+- Month headings on the home page are clickable: click one to see only that month, and searches then stay within it.
+- “Select all extra copies” in the Identical category of the Duplicates view (removing an identical copy loses nothing; near-duplicates and bursts still need a look group by group).
+- Settings: **Open** next to each photo folder and the index folder (where the log file is), plus **Check for updates** and **Report a problem**, which open the project's GitHub pages in your browser. The app itself still never goes online after setup.
+
+### Changed
+
+- Dates in the preview no longer break in the middle of the time, and the end of the list counts photos instead of tiles (bursts are folded into one tile).
+- The README screenshots show the current interface, plus one of the Duplicates view.
+- A UI test now checks that every interface string the app uses exists (a key missing in every language slipped past the per-language comparison).
+
 ## [0.3.0] - 2026-10-08
 
 ### Added

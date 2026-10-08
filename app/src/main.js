@@ -310,6 +310,24 @@ function findSimilar(r) {
   requestView({ mode: "similar", label: t("summary.similar_to", { name: r.name }), path: `/api/similar/${r.id}` });
 }
 
+/* 看这张照片当天的全部照片：按拍摄日期（本机时区的这一天，和搜索词里写日期一样）筛选；返回键回到原来的列表 */
+function showDay(r) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(r?.taken_at || "");
+  if (!m) return;
+  if (viewer.open) viewer.close();
+  app.time = dayRange(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  syncTimeButton();
+  app.pending = null;
+  $("#q").value = "";
+  openView({ mode: "recent", label: t("summary.all"), path: "/api/recent" });
+}
+
+/* 在系统浏览器里打开项目网页（检查更新、报告问题）：只在用户点击时访问网络 */
+function openWeb(url) {
+  if (tauri) opener("open_url", { url });
+  else window.open(url, "_blank", "noopener");
+}
+
 const dupSpec = (cat = "all") => ({ mode: "dups", label: t("summary.dups"), path: "/api/duplicates", cat });
 
 function openDups() {
@@ -794,7 +812,15 @@ function render(reset) {
       if (group !== lastGroup) {
         const h = document.createElement("h3");
         h.className = "group";
-        h.textContent = group;
+        if (r.taken_at) { // 点月份只看这个月（之后搜索也只在这个月里找）
+          const b = Object.assign(document.createElement("button"), {
+            type: "button", className: "month-link", textContent: group, title: t("grid.month_title", { month: group }),
+          });
+          b.dataset.month = r.taken_at.slice(0, 7);
+          h.append(b);
+        } else {
+          h.textContent = group;
+        }
         frag.append(h);
         lastGroup = group;
       }
@@ -862,7 +888,7 @@ function setSentinel() {
   const v = app.view;
   let text = "";
   if (v?.loading) text = v.results.length ? t("grid.loading") : "";
-  else if (v && !v.hasMore && v.results.length && v.mode === "recent") text = t("grid.all_shown", { n: v.results.length });
+  else if (v && !v.hasMore && v.results.length && v.mode === "recent") text = t("grid.all_shown", { n: v.photos ?? v.results.length }); // 照片数，不是折叠后的格子数
   $("#sentinel").textContent = text;
 }
 
@@ -907,6 +933,22 @@ function syncDupBar(v) {
     const n = v.counts?.[b.dataset.cat];
     b.querySelector(".n").textContent = n == null ? "" : n.toLocaleString(LANG);
   }
+  // 一键选中只给“完全相同”：删掉一份不丢任何东西。几乎相同、连拍还是要逐组看
+  $("#dup-select-all").hidden = !(v.cat === "identical" && v.counts?.identical > 0);
+}
+
+/* 选中全部完全相同的多余副本：先把剩下几页都取回来，再选 */
+async function selectAllIdentical() {
+  const v = app.view;
+  while (app.view === v && (v.hasMore || v.loading)) {
+    if (v.loading) await sleep(50); // loadPage 遇到正在加载会直接返回，不能空转等
+    else await loadPage();
+  }
+  if (app.view !== v) return;
+  v.results.forEach((r, i) => {
+    if (r.dup?.role === "identical") setSelected(i, true);
+  });
+  updateSelbar();
 }
 
 function syncKindButtons() {
@@ -1010,6 +1052,7 @@ function fillInfo(r) {
   $("#v-counter").textContent = `${i + 1} / ${total}`;
   $("#v-name").textContent = r.name;
   $("#v-time").textContent = formatTime(r.taken_at);
+  $("#v-day").hidden = !r.taken_at;
   const pixels = r.width * r.height;
   $("#v-size").textContent = pixels
     ? t("viewer.dimensions_value", { w: r.width, h: r.height, mp: (pixels / 1e6).toFixed(1), wan: Math.round(pixels / 1e4) })
@@ -1173,6 +1216,7 @@ viewer.addEventListener("keydown", (e) => {
   } else if (key === "f") setFullscreen(!fullscreen);
   else if (key === "i") toggleInfo();
   else if (key === "s" && !e.ctrlKey && !e.metaKey) findSimilar(app.shown);
+  else if (key === "d" && !e.ctrlKey && !e.metaKey) showDay(app.shown);
   else if ((e.ctrlKey || e.metaKey) && key === "c" && !getSelection().toString()) { // 选中了路径文字时照常复制文字
     e.preventDefault();
     copyImage();
@@ -1332,6 +1376,7 @@ function photoMenu(r, i) {
   const items = [];
   if (i != null) items.push({ label: t("ctx.open"), run: () => openViewer(i) });
   items.push({ label: t("viewer.find_similar"), run: () => findSimilar(r) });
+  if (r.taken_at) items.push({ label: t("viewer.show_day"), run: () => showDay(r) });
   if (i != null) items.push({ label: t(app.selected.has(i) ? "ctx.deselect" : "ctx.select"), run: () => toggleSelect(i) });
   items.push(null, { label: t("viewer.copy_image"), run: () => copyImage(r) }, { label: t("viewer.copy_path"), run: () => copyPath(r) });
   if (tauri) {
@@ -1513,6 +1558,15 @@ function setupLanguageSelect() {
   });
 }
 
+/* “打开”：在资源管理器里打开这个文件夹 */
+function openFolderLink(path) {
+  const b = Object.assign(document.createElement("button"), {
+    type: "button", className: "link", textContent: t("settings.open"), title: t("settings.open_title"),
+  });
+  b.addEventListener("click", () => opener("open_path", { path }));
+  return b;
+}
+
 function statRow(label, value) {
   const dt = document.createElement("dt");
   dt.textContent = label;
@@ -1544,7 +1598,9 @@ async function renderLibrary() {
     });
     const remove = Object.assign(document.createElement("button"), { type: "button", className: "link danger", textContent: t("settings.remove") });
     remove.addEventListener("click", () => removeDir(d.path));
-    li.append(path, meta, remove);
+    li.append(path, meta);
+    if (tauri && d.online) li.append(openFolderLink(d.path));
+    li.append(remove);
     return li;
   }));
   if (!library.dirs.length) {
@@ -1562,10 +1618,13 @@ async function renderLibrary() {
     });
     groups[1].append(" · ", review);
   }
+  // 索引文件夹里有缩略图和 backend.log，排查问题时要找它
+  const index = statRow(t("settings.stat_index"), t("settings.stat_index_value", { dir: library.index_dir, size: formatBytes(library.index_bytes) }));
+  if (tauri) index[1].append(" · ", openFolderLink(library.index_dir));
   $("#lib-stats").replaceChildren(
     ...statRow(t("settings.stat_photos"), library.screenshots ? t("settings.stat_photos_value", { photos, shots }) : photos),
     ...groups,
-    ...statRow(t("settings.stat_index"), t("settings.stat_index_value", { dir: library.index_dir, size: formatBytes(library.index_bytes) })),
+    ...index,
     ...statRow(t("settings.stat_model"), `${library.model}${library.device ? ` · ${library.device}` : ""}`),
     ...statRow(t("settings.stat_last_scan"), library.last_scan || t("settings.never_scanned")),
   );
@@ -1639,6 +1698,11 @@ $("#grid").addEventListener("click", (e) => {
   if ($("#grid").classList.contains("stale")) return;
   const extras = e.target.closest(".dup-head .link");
   if (extras) return selectExtras(Number(extras.dataset.group));
+  const month = e.target.closest(".month-link");
+  if (month) {
+    const [y, m] = month.dataset.month.split("-").map(Number);
+    return setTime(monthRange(y, m));
+  }
   const tile = e.target.closest(".tile");
   if (!tile) return;
   const i = Number(tile.dataset.index);
@@ -1708,6 +1772,7 @@ ctxMenu.addEventListener("keydown", (e) => {
 });
 window.addEventListener("scroll", hideMenu, { passive: true });
 window.addEventListener("resize", hideMenu);
+$("#dup-select-all").addEventListener("click", selectAllIdentical);
 for (const btn of $$("#dup-cat button")) {
   btn.addEventListener("click", () => {
     if (app.view?.mode === "dups" && btn.dataset.cat !== app.view.cat) openView(dupSpec(btn.dataset.cat), false);
@@ -1766,6 +1831,9 @@ $("#v-prev").addEventListener("click", () => step(-1));
 $("#v-next").addEventListener("click", () => step(1));
 $("#v-close").addEventListener("click", () => viewer.close());
 $("#v-similar").addEventListener("click", () => findSimilar(app.shown));
+$("#v-day").addEventListener("click", () => showDay(app.shown));
+$("#check-updates").addEventListener("click", () => openWeb("https://github.com/zkwi/local-photo-search/releases/latest"));
+$("#report-issue").addEventListener("click", () => openWeb("https://github.com/zkwi/local-photo-search/issues"));
 $("#v-copy").addEventListener("click", () => copyImage());
 $("#v-copy-path").addEventListener("click", () => copyPath());
 $("#v-open").addEventListener("click", () => opener("open_path", { path: app.shown.path }));

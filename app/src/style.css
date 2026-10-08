@@ -232,6 +232,9 @@ main { padding: 12px 20px 40px; }
 .grid.stale { opacity: .45; pointer-events: none; }
 .group { grid-column: 1 / -1; margin: 14px 0 2px; font-size: 15px; font-weight: 600; }
 .group:first-child { margin-top: 0; }
+/* 月份标题可以点，点了只看这个月 */
+.month-link { padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+.month-link:hover { color: var(--accent); text-decoration: underline; }
 .tile {
   position: relative;
   aspect-ratio: 1;
@@ -355,6 +358,7 @@ main { padding: 12px 20px 40px; }
 .sel-count { margin-right: 6px; font-weight: 600; }
 .settings-foot { padding-top: 0 !important; }
 .settings-foot .about { margin: 10px 0 0; font-size: 12px; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 4px 18px; }
 .keys-list dt { white-space: nowrap; }
 kbd {
   display: inline-block;
@@ -462,7 +466,7 @@ kbd {
   background: rgba(255, 255, 255, .04);
   border-left: 1px solid rgba(255, 255, 255, .08);
 }
-.info .name { font-weight: 600; word-break: break-all; }
+.info .name { font-weight: 600; overflow-wrap: anywhere; }
 .group-box { margin-top: 14px; }
 .group-label { margin-bottom: 6px; color: #9aa1a9; font-size: 12px; }
 .strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 4px; }
@@ -479,7 +483,8 @@ kbd {
 .strip-item.active { border-color: var(--accent); }
 .info dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; margin: 16px 0 20px; font-size: 13px; }
 .info dt { color: #9aa1a9; }
-.info dd { margin: 0; word-break: break-all; }
+/* 放不下时才在任意位置断开（长路径、长文件名）；日期、尺寸这类有空格的照常在空格处换行，不会把 14:09 拆开 */
+.info dd { margin: 0; overflow-wrap: anywhere; }
 .link { padding: 0; border: 0; background: none; color: #8fb0ff; font-size: 12px; cursor: pointer; }
 .link:hover { text-decoration: underline; }
 .actions { display: flex; flex-direction: column; gap: 8px; }
@@ -532,7 +537,7 @@ kbd {
 .dir-list { margin: 0 0 10px; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; }
 .dir-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
 .dir-list li + li { border-top: 1px solid var(--line); }
-.dir-path { flex: 1; min-width: 0; word-break: break-all; }
+.dir-path { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .dir-meta { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .dir-meta.bad { color: var(--err); }
 .btn {
@@ -556,7 +561,7 @@ kbd {
 }
 .stats { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; margin: 0 0 14px; font-size: 13px; }
 .stats dt { color: var(--muted); }
-.stats dd { margin: 0; word-break: break-all; }
+.stats dd { margin: 0; overflow-wrap: anywhere; }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .row .hint { margin: 0; }
 
