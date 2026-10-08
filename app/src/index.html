@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Photo Search</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Ccircle cx='14' cy='14' r='7' fill='none' stroke='white' stroke-width='3'/%3E%3Cpath d='M19 19l6 6' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 界面文字由 i18n.js 按 data-i18n* 属性换成当前语言；这里写的英文只在脚本没运行时出现 -->
+  <header class="bar">
+    <button id="home" class="brand" type="button" data-i18n="app.brand" data-i18n-title="app.home_title">Photo Search</button>
+    <form id="search-form" class="search" role="search" autocomplete="off">
+      <input id="q" type="search" maxlength="200" data-i18n-placeholder="search.placeholder" data-i18n-aria-label="search.label" data-i18n-title="search.shortcut">
+      <button id="go" type="submit" data-i18n="search.go">Search</button>
+    </form>
+    <button id="status" class="status" data-state="starting" type="button" data-i18n-title="status.settings">
+      <span class="dot" aria-hidden="true"></span><span id="status-text" role="status" data-i18n="status.starting">Starting</span>
+    </button>
+    <button id="open-settings" class="icon-btn" type="button" data-i18n-title="status.settings" data-i18n-aria-label="status.settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>
+      </svg>
+    </button>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <button id="back" class="back" type="button" hidden data-i18n="toolbar.back" data-i18n-title="toolbar.back_title">← Back</button>
+      <p id="summary" class="summary"></p>
+      <button id="refresh-note" class="link" type="button" hidden data-i18n="toolbar.refresh_note">New photos were added — click to refresh</button>
+      <div class="time-box">
+        <button id="time-btn" class="time-btn" type="button" popovertarget="time-menu" aria-haspopup="menu" data-i18n="time.any" data-i18n-title="toolbar.time_title">Any time</button>
+        <button id="time-clear" class="time-clear" type="button" hidden data-i18n-aria-label="toolbar.time_clear" data-i18n-title="toolbar.time_clear">×</button>
+      </div>
+      <button id="size-btn" class="icon-btn" type="button" data-i18n-aria-label="toolbar.size">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/>
+          <rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+        </svg>
+      </button>
+      <div class="seg" id="kind" role="group" data-i18n-aria-label="toolbar.kind">
+        <button type="button" data-kind="all" aria-pressed="true" data-i18n="kind.all">All</button>
+        <button type="button" data-kind="photo" aria-pressed="false" data-i18n="kind.photo">Photos</button>
+        <button type="button" data-kind="screenshot" aria-pressed="false" data-i18n="kind.screenshot">Screenshots</button>
+      </div>
+    </div>
+    <div id="suggest" class="suggest" hidden>
+      <div class="suggest-row" id="history-row" hidden>
+        <span class="suggest-label" data-i18n="suggest.recent">Recent:</span>
+        <div class="chips" id="history-chips"></div>
+        <button class="link" id="clear-history" type="button" data-i18n="suggest.clear">Clear</button>
+      </div>
+      <div class="suggest-row">
+        <span class="suggest-label" data-i18n="suggest.try">Try:</span>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+    <div id="grid" class="grid"></div>
+    <p id="sentinel" class="sentinel"></p>
+  </main>
+
+  <dialog id="viewer" class="viewer" data-i18n-aria-label="viewer.label" tabindex="-1">
+    <div class="stage" id="stage">
+      <img id="v-img" alt="" draggable="false">
+      <button class="nav prev" id="v-prev" type="button" data-i18n-aria-label="viewer.prev">‹</button>
+      <button class="nav next" id="v-next" type="button" data-i18n-aria-label="viewer.next">›</button>
+      <div class="v-tools">
+        <span class="counter" id="v-counter"></span>
+        <button class="v-tool" id="v-play" type="button" data-i18n-title="viewer.play_title" data-i18n-aria-label="viewer.play">▶</button>
+        <button class="v-tool" id="v-full" type="button" data-i18n-title="viewer.full_title" data-i18n-aria-label="viewer.full">⛶</button>
+        <button class="v-tool" id="v-info" type="button" data-i18n-title="viewer.info_title" data-i18n-aria-label="viewer.info">ⓘ</button>
+      </div>
+      <p class="v-note" id="v-note" hidden></p>
+    </div>
+    <aside class="info">
+      <div class="name" id="v-name"></div>
+      <div class="group-box" id="v-group" hidden>
+        <div class="group-label" id="v-group-label"></div>
+        <div class="strip" id="v-strip"></div>
+      </div>
+      <dl>
+        <dt data-i18n="viewer.taken">Taken</dt><dd id="v-time"></dd>
+        <dt data-i18n="viewer.dimensions">Dimensions</dt><dd id="v-size"></dd>
+        <dt data-i18n="viewer.file_size">File size</dt><dd id="v-bytes"></dd>
+        <dt data-i18n="viewer.camera">Camera</dt><dd id="v-camera"></dd>
+        <dt id="v-score-label" data-i18n="viewer.similarity">Similarity</dt><dd id="v-score"></dd>
+        <dt data-i18n="viewer.location">Location</dt><dd><span id="v-path"></span> <button class="link" id="v-copy-path" type="button" data-i18n="viewer.copy_path">Copy path</button></dd>
+      </dl>
+      <div class="actions">
+        <button id="v-similar" class="primary" type="button" data-i18n="viewer.find_similar">Find similar</button>
+        <button id="v-copy" type="button" data-i18n="viewer.copy_image">Copy image</button>
+        <button id="v-open" type="button" data-tauri data-i18n="viewer.open">Open with default app</button>
+        <button id="v-reveal" type="button" data-tauri data-i18n="viewer.reveal">Show in folder</button>
+      </div>
+      <p class="keys" data-i18n="viewer.keys">← → to navigate · click to zoom · Esc to close</p>
+    </aside>
+    <button class="close" id="v-close" type="button" data-i18n-aria-label="common.close">×</button>
+  </dialog>
+
+  <dialog id="settings" class="settings" aria-labelledby="settings-title">
+    <div class="settings-head">
+      <h2 id="settings-title" data-i18n="settings.title">Library settings</h2>
+      <button class="icon-btn" id="settings-close" type="button" data-i18n-aria-label="common.close">×</button>
+    </div>
+    <section>
+      <h3 data-i18n="settings.folders">Photo folders</h3>
+      <p class="hint" data-i18n="settings.folders_hint">Photos in these folders (including subfolders) are only read — never modified, moved or deleted.</p>
+      <ul class="dir-list" id="dir-list"></ul>
+      <button class="btn" id="add-dir" type="button" data-i18n="settings.add_folder">+ Add folder</button>
+    </section>
+    <section>
+      <h3 data-i18n="settings.index">Index</h3>
+      <dl class="stats" id="lib-stats"></dl>
+      <div class="row">
+        <button class="btn" id="rescan" type="button" data-i18n="settings.rescan">Rescan now</button>
+        <span class="hint" id="rescan-note" data-i18n="settings.rescan_hint">New photos are picked up automatically at startup.</span>
+      </div>
+    </section>
+    <section>
+      <h3 id="lang-title" data-i18n="settings.language">Language</h3>
+      <select id="lang-select" class="select" aria-labelledby="lang-title"></select>
+    </section>
+    <section class="settings-foot">
+      <button class="link" id="open-help" type="button" data-i18n="settings.shortcuts">Keyboard shortcuts (?)</button>
+      <p class="hint about" id="about" data-i18n="settings.about">Photos, thumbnails and the index stay on this computer and are never uploaded.</p>
+    </section>
+  </dialog>
+
+  <div id="selbar" class="selbar" hidden role="toolbar" data-i18n-aria-label="sel.label">
+    <span id="sel-count" class="sel-count"></span>
+    <button class="btn" id="sel-all" type="button" title="Ctrl+A" data-i18n="sel.all">Select all loaded</button>
+    <button class="btn" id="sel-copy" type="button" data-i18n="sel.copy">Copy paths</button>
+    <button class="btn primary" id="sel-export" type="button" data-i18n="sel.export">Export to folder…</button>
+    <button class="icon-btn" id="sel-clear" type="button" data-i18n-aria-label="sel.clear" data-i18n-title="sel.clear_title">×</button>
+  </div>
+
+  <dialog id="help" class="settings help" aria-labelledby="help-title">
+    <div class="settings-head">
+      <h2 id="help-title" data-i18n="help.title">Keyboard shortcuts</h2>
+      <button class="icon-btn" id="help-close" type="button" data-i18n-aria-label="common.close">×</button>
+    </div>
+    <section>
+      <dl class="stats keys-list">
+        <dt data-i18n-html="help.search_key"></dt><dd data-i18n="help.search"></dd>
+        <dt data-i18n-html="help.back_key"></dt><dd data-i18n="help.back"></dd>
+        <dt data-i18n-html="help.arrows_key"></dt><dd data-i18n="help.arrows"></dd>
+        <dt data-i18n-html="help.enter_key"></dt><dd data-i18n="help.enter"></dd>
+        <dt data-i18n-html="help.select_key"></dt><dd data-i18n="help.select"></dd>
+        <dt data-i18n-html="help.range_key"></dt><dd data-i18n="help.range"></dd>
+        <dt data-i18n-html="help.all_key"></dt><dd data-i18n="help.all"></dd>
+        <dt data-i18n-html="help.esc_key"></dt><dd data-i18n="help.esc"></dd>
+        <dt data-i18n-html="help.viewer_key"></dt><dd data-i18n="help.viewer"></dd>
+        <dt data-i18n-html="help.viewer_more_key"></dt><dd data-i18n="help.viewer_more"></dd>
+        <dt data-i18n-html="help.help_key"></dt><dd data-i18n="help.help"></dd>
+      </dl>
+    </section>
+  </dialog>
+
+  <div id="time-menu" class="menu time-menu" popover role="menu" data-i18n-aria-label="time.menu"></div>
+  <div id="suggest-pop" class="menu suggest-pop" popover="manual" role="listbox" data-i18n-aria-label="suggest.box"></div>
+
+  <div id="toast" class="toast" role="status" popover="manual"></div>
+  <div id="banner" class="banner" role="alert" popover="manual">
+    <span id="banner-text"></span>
+    <button class="btn" id="banner-action" type="button" data-i18n="banner.restart">Restart background service</button>
+  </div>
+
+  <script src="locales/en.js"></script>
+  <script src="locales/zh-CN.js"></script>
+  <script src="i18n.js"></script>
+  <script src="time.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

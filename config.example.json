@@ -1,0 +1,8 @@
+{
+  "photo_dirs": [
+    "D:/Photos",
+    "//NAS/photos/phone-backup"
+  ],
+  "index_dir": "index",
+  "model": "google/embeddinggemma-2"
+}

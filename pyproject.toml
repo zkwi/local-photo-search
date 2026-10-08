@@ -1,0 +1,45 @@
+[project]
+name = "local-photo-search"
+version = "0.1.0"
+description = "Search your local photos with natural language, fully offline (EmbeddingGemma 2 + Tauri)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch>=2.14",
+    "torchvision>=0.29",
+    "transformers>=5.19",
+    "sentence-transformers>=6.1",
+    "pillow>=12",
+    "pillow-heif>=1.8",
+    "numpy>=2",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
+
+[dependency-groups]
+dev = ["pytest>=9"]
+
+[tool.uv]
+package = false
+
+# Windows / Linux 的 torch 走 CUDA 13.0 源（没有 N 卡也能用 CPU 跑）；macOS 走 PyPI
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform != 'darwin'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform != 'darwin'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+# 明确列出规则：ruff 各版本的默认规则不同，固定下来结果才稳定
+select = ["E", "F", "W", "B", "I", "UP"]

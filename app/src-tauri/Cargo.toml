@@ -1,0 +1,22 @@
+[package]
+name = "local-photo-search"
+version = "0.1.0"
+description = "Search your local photos with natural language, fully offline"
+license = "MIT"
+repository = "https://github.com/zkwi/local-photo-search"
+edition = "2021"
+
+[lib]
+name = "local_photo_search_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"

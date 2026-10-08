@@ -1,0 +1,19 @@
+# 照片、索引和本机配置都是私人数据，不进版本库
+data/
+index/
+config.json
+*.log
+
+# 环境与构建产物
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+app/node_modules/
+app/src-tauri/target/
+app/src-tauri/gen/
+
+# 浏览器自动化工具的临时文件
+.playwright-cli/
+.playwright-mcp/

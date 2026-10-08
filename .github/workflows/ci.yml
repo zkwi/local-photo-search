@@ -1,0 +1,29 @@
+# 每次推送到 main 和每个 PR：后端测试、代码检查、界面测试（都不需要下载模型）
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # setup-uv 从 v8 起不再提供 @v10 这类浮动标签，必须写完整版本
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          enable-cache: true
+      - name: Install Python dependencies
+        run: uv sync --locked
+      - name: Backend tests
+        run: uv run pytest
+      - name: Lint
+        run: uvx ruff@0.16.10 check # 固定版本：ruff 新增规则不会让 CI 突然变红
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: UI tests
+        working-directory: app
+        run: npm test

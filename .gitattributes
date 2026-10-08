@@ -1,0 +1,8 @@
+# 仓库里统一用 LF 换行，不受各人 core.autocrlf 设置影响；图片按二进制处理
+* text=auto eol=lf
+# 批处理文件用 CRLF，cmd.exe 对 LF 换行的批处理有已知问题
+*.cmd text eol=crlf
+*.png binary
+*.webp binary
+*.ico binary
+*.icns binary
