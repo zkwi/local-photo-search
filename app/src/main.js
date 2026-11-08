@@ -337,7 +337,7 @@ function openDups() {
 
 /* ---------- 以图搜图：选图、拖进窗口、粘贴 ---------- */
 
-const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif|heic|heif|tiff?)$/i;
+const IMAGE_EXT = /\.(jpe?g|png|webp|bmp|gif|heic|heif|tiff?|jxl)$/i;
 const baseName = (path) => path.split(/[\\/]/).pop();
 
 /* source 是 {path, name}（对话框里选的、拖进窗口的文件）或 {blob, name}（粘贴的、浏览器里选的） */
@@ -394,7 +394,7 @@ async function pickImage() {
   if (!tauri?.dialog) return $("#img-file").click();
   const path = await tauri.dialog.open({
     title: t("image.choose"),
-    filters: [{ name: t("image.filter"), extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff"] }],
+    filters: [{ name: t("image.filter"), extensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif", "heic", "heif", "tif", "tiff", "jxl"] }],
   });
   if (path) searchByImage({ path, name: baseName(path) });
 }

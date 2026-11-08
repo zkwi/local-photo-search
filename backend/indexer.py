@@ -20,7 +20,18 @@ from PIL import Image, ImageOps
 from .common import IMAGE_TOKENS, load_config, load_model, open_db, register_heif
 
 log = logging.getLogger("indexer")
+# Register the JPEG XL decoder with Pillow for indexing and image queries.
+try:
+    import pillow_jxl  # noqa: F401
+except ImportError:
+    log.warning("JPEG XL support unavailable: pillow-jxl-plugin is not installed")
+    JXL_AVAILABLE = False
+else:
+    JXL_AVAILABLE = True
+
 EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+if JXL_AVAILABLE:
+    EXTS.add(".jxl")
 if register_heif():
     EXTS |= {".heic", ".heif"}
 EMBED_SIDE = 1024  # 先缩到这个尺寸再送模型，模型内部还会按 token 预算缩放
